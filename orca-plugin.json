@@ -1,0 +1,83 @@
+{
+  "$schema": "https://raw.githubusercontent.com/stablyai/orca/main/docs/schemas/plugins/orca-plugin.v2.schema.json",
+  "manifestVersion": 2,
+  "id": "pipeline",
+  "name": "Pipeline",
+  "version": "0.1.0",
+  "description": "Staged workflows for your agents: plan, build, test and review chained in one agent session.",
+  "license": "MIT",
+  "engines": {
+    "orca": ">=1.4.248"
+  },
+  "execution": "trusted-worker",
+  "pluginApi": 1,
+  "main": "src/worker.ts",
+  "contributes": {
+    "panels": [
+      {
+        "id": "pipeline",
+        "title": "Pipeline",
+        "icon": "layers",
+        "entry": "src/panel.tsx",
+        "ui": "components"
+      }
+    ],
+    "events": [
+      {
+        "on": "agent.status.changed"
+      }
+    ],
+    "statusBarItems": [
+      {
+        "id": "run",
+        "text": "Pipeline",
+        "icon": "layers",
+        "tooltip": "Pipeline run state"
+      }
+    ],
+    "settings": [
+      {
+        "key": "stageTimeoutMinutes",
+        "title": "Stage timeout (minutes)",
+        "description": "How long one stage may run without a completion signal before it is marked failed.",
+        "type": "integer",
+        "default": 20,
+        "minimum": 1,
+        "maximum": 240
+      },
+      {
+        "key": "notify",
+        "title": "Desktop notifications",
+        "description": "Show a notification when a run finishes, fails or needs you.",
+        "type": "boolean",
+        "default": true
+      }
+    ]
+  },
+  "capabilities": [
+    {
+      "kind": "workspace:read"
+    },
+    {
+      "kind": "agent:read"
+    },
+    {
+      "kind": "agent:launch"
+    },
+    {
+      "kind": "terminal:send"
+    },
+    {
+      "kind": "terminal:read"
+    },
+    {
+      "kind": "notifications:show"
+    },
+    {
+      "kind": "storage:own"
+    },
+    {
+      "kind": "settings:own"
+    }
+  ]
+}

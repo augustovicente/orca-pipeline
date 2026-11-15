@@ -1,0 +1,15 @@
+{
+  "name": "orca-pipeline",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Staged workflows for Orca agents: plan, build, test and review in one agent session.",
+  "scripts": {
+    "validate": "orca plugin validate .",
+    "check": "orca plugin check .",
+    "test": "orca plugin test .",
+    "typecheck": "tsc -p ."
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2"
+  }
+}
