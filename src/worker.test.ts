@@ -113,6 +113,43 @@ test('rejects a second run while one is going', async () => {
   await worker.deactivate()
 })
 
+test('adds a new seeded pipeline to storage that predates it, once', async () => {
+  const host = mockHost({
+    results: { 'workspace.list': { workspaces: [workspace], truncated: false } },
+    storage: {
+      pipelines: [
+        {
+          id: 'feature',
+          name: 'Feature',
+          agent: 'claude',
+          stages: [{ id: 'plan', name: 'Plan', prompt: 'Plan' }]
+        }
+      ]
+    }
+  })
+  let worker = await mountWorker(main, { host })
+  const seeded = await worker.request('pipelines.list')
+  assert.deepEqual(
+    seeded.pipelines.map((pipeline) => pipeline.id).sort(),
+    ['bugfix', 'feature', 'qa']
+  )
+  // The edited one is kept, not overwritten.
+  assert.equal(seeded.pipelines.find((pipeline) => pipeline.id === 'feature')?.name, 'Feature')
+  await worker.deactivate()
+
+  // Removing a seeded pipeline keeps it removed after a reload.
+  worker = await mountWorker(main, { host })
+  await worker.request('pipelines.remove', { id: 'qa' })
+  await worker.deactivate()
+  worker = await mountWorker(main, { host })
+  const after = await worker.request('pipelines.list')
+  assert.equal(
+    after.pipelines.some((pipeline) => pipeline.id === 'qa'),
+    false
+  )
+  await worker.deactivate()
+})
+
 test('saves and removes a pipeline', async () => {
   const host = hostFor([])
   const worker = await mountWorker(main, { host })

@@ -15,6 +15,21 @@ stages, each with its own prompt, driven by the agent's own completion signal.
    └────────┴────────┴────────┴──▶ same terminal, same conversation
 ```
 
+It is inspired by [Worca](https://worca.dev), which runs a deterministic plan → implement → review
+pipeline on top of Claude Code as its own engine. This takes the same idea and makes it native to
+Orca: no second runtime, no npm package, and the work lands in your worktree, your terminals and
+your review flow.
+
+## Flows
+
+| Pipeline | Stages | What it is for |
+| --- | --- | --- |
+| **Feature** | plan → build → test → review | A change from scratch: plan first, keep the diff small, verify it, then review your own work as a strict reviewer. |
+| **QA (e2e)** | scope → cases → environment → run → report | End-to-end QA of a feature or branch: bring the app up, click through the journeys in Orca's embedded browser, and end with a pass/fail table and a verdict. |
+| **Bug fix** | reproduce → fix → prove | Root cause before code: reproduce it, fix the cause, prove the fix holds. |
+
+Every flow is just prompts — edit them in the panel, or add your own.
+
 ## What it does
 
 - **Runs a pipeline in a workspace.** Pick a worktree or folder, pick a pipeline, describe the
@@ -30,8 +45,12 @@ stages, each with its own prompt, driven by the agent's own completion signal.
 - **Edits pipelines in the panel.** Name, agent and stages per pipeline; `{{task}}` in a prompt is
   replaced by the task you typed.
 
-Two pipelines ship with it: a feature cycle (plan → build → test → review) and a bug fix cycle
-(reproduce → fix → prove). Both are plain prompts — edit them.
+Those three ship on first run and are yours to edit. A pipeline you delete stays deleted; a new
+default added by a later version is appended once, without touching the ones you changed.
+
+The **QA (e2e)** flow assumes the agent can drive the app the way a person does: it opens Orca's
+embedded browser (`orca tab create`, `snapshot`, `click`, `fill`), reads what is on screen, and
+closes its tabs at the end. That is what makes the report evidence rather than opinion.
 
 ## Requirements
 
@@ -65,6 +84,25 @@ The plugin is a trusted worker: it runs in its own Node process with your accoun
 asks for exactly what a pipeline needs — `workspace:read`, `agent:read`, `agent:launch`,
 `terminal:send`, `terminal:read`, `notifications:show`, `storage:own`, `settings:own` — and
 nothing else. It has no network access of its own and keeps its data in Orca's plugin storage.
+
+## Inspired by Worca
+
+[Worca](https://worca.dev) is a deterministic multi-agent pipeline for AI coding agents: you
+describe the work, it plans, implements and reviews, and you end up with a reviewed pull request.
+The idea is worth copying, and the shape of it — an ordered set of stages, each one ending in
+something you can check — is what this plugin implements.
+
+What differs is where it runs:
+
+| | Worca | Pipeline (this plugin) |
+| --- | --- | --- |
+| Engine | its own app: web UI, CLI and a Claude Code skill (`npm i -g @worca/app`) | Orca itself: `agent.launch`, `terminal.sendText`, `agent.status.changed` |
+| Agent | Claude Code, Copilot or a local model | whichever agent you already launch in Orca |
+| Pipeline | fixed stages, chosen by Worca | prompts you can read and edit in the panel |
+| Version control | its own worktrees and PR flow | the worktree you picked, your Source Control panel |
+
+If you want Worca itself, run it — it works fine in an Orca terminal. This is for when you want the
+pipeline without the second runtime.
 
 ## How it works
 

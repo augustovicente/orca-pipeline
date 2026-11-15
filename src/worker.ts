@@ -10,6 +10,8 @@ import { DEFAULT_PIPELINES } from './defaults'
 import type { Pipeline, Run, Stage, StageState, Workspace } from './protocol'
 
 const PIPELINES_KEY = 'pipelines'
+/** Ids of the seeded pipelines this plugin has already offered, so a deleted seed stays deleted. */
+const SEEDED_KEY = 'seeded'
 const RUN_KEY = 'run'
 const STATUS_BAR_ID = 'run'
 
@@ -262,12 +264,31 @@ async function onAgentStatus(
 
 async function storedPipelines(orca: OrcaWorkerApi): Promise<Pipeline[]> {
   const stored = await orca.storage.get(PIPELINES_KEY)
-  if (Array.isArray(stored) && stored.length > 0) {
-    return plain(stored) as Pipeline[]
+  const existing: Pipeline[] = Array.isArray(stored) ? (plain(stored) as Pipeline[]) : []
+  const seededRaw = await orca.storage.get(SEEDED_KEY)
+  const present = new Set(existing.map((entry) => entry.id))
+  // Before the seeded list existed, whatever the defaults left in storage counted as offered.
+  const offered = new Set<string>(
+    Array.isArray(seededRaw)
+      ? seededRaw.map(String)
+      : DEFAULT_PIPELINES.filter((entry) => present.has(entry.id)).map((entry) => entry.id)
+  )
+
+  let next = existing
+  for (const seed of DEFAULT_PIPELINES) {
+    if (offered.has(seed.id) || present.has(seed.id)) {
+      offered.add(seed.id)
+      continue
+    }
+    next = [...next, plain(seed)]
+    offered.add(seed.id)
   }
-  const seed = plain(DEFAULT_PIPELINES)
-  await orca.storage.set(PIPELINES_KEY, asJson(seed))
-  return seed
+
+  if (next !== existing || !Array.isArray(stored)) {
+    await orca.storage.set(PIPELINES_KEY, asJson(next))
+  }
+  await orca.storage.set(SEEDED_KEY, asJson([...offered]))
+  return next
 }
 
 async function storedRun(orca: OrcaWorkerApi): Promise<Run | null> {
