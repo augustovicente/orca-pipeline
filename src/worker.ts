@@ -520,10 +520,14 @@ async function launchModeled(
       prompt,
       '--json'
     ])) as {
-      result?: { launch?: { outcome?: { handle?: string } } }
-      launch?: { outcome?: { handle?: string } }
+      result?: { outcome?: { handle?: string }; launch?: { outcome?: { handle?: string } } }
+      outcome?: { handle?: string }
     }
-    const handle = answer.result?.launch?.outcome?.handle ?? answer.launch?.outcome?.handle
+    // `orca agent launch` answers result.outcome.handle; older shapes nest it under launch.
+    const handle =
+      answer.result?.outcome?.handle ??
+      answer.result?.launch?.outcome?.handle ??
+      answer.outcome?.handle
     if (!handle) throw new Error('no terminal handle in the launch answer')
     return { terminalId: handle, promptSent: true }
   } catch (error) {

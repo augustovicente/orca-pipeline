@@ -380,7 +380,7 @@ test('a modeled stage starts its own process and falls back to the next model', 
   const launches: string[][] = []
   main.setCliRunnerForTests(async (args) => {
     launches.push(args)
-    return { result: { launch: { outcome: { handle: `modeled-${launches.length}` } } } }
+    return { result: { outcome: { handle: `modeled-${launches.length}` } } }
   })
   const sent: Sent[] = []
   const host = mockHost({
@@ -451,7 +451,7 @@ test('a seeded stage runs on the model its reasoning level maps to', async () =>
   const launches: string[][] = []
   main.setCliRunnerForTests(async (args) => {
     launches.push(args)
-    return { result: { launch: { outcome: { handle: `modeled-${launches.length}` } } } }
+    return { result: { outcome: { handle: `modeled-${launches.length}` } } }
   })
   const host = mockHost({
     settings: { modelBootSeconds: 0 },
