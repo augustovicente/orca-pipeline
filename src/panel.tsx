@@ -8,6 +8,7 @@ import {
   CodeView,
   Collapsible,
   EmptyState,
+  Field,
   Heading,
   host,
   IconButton,
@@ -27,16 +28,44 @@ import {
   Text,
   Textarea,
   type PanelContext,
+  type IconName,
   type TableRow,
   type Tone
 } from 'orca'
 import type { Pipeline, Run, Stage, StageStatus, Workspace } from './protocol'
+
+/**
+ * The agents worth one click. `Select` options cannot carry an icon, so the picker is a button
+ * and a List; anything not listed is still reachable through the free-text field beside it.
+ */
+const AGENT_CHOICES: readonly { id: string; icon: IconName }[] = [
+  { id: 'claude', icon: 'bot' },
+  { id: 'codex', icon: 'code' },
+  { id: 'opencode', icon: 'terminal' },
+  { id: 'gemini', icon: 'star' },
+  { id: 'copilot', icon: 'cloud' },
+  { id: 'cursor', icon: 'file' },
+  { id: 'grok', icon: 'zap' },
+  { id: 'omp', icon: 'gauge' },
+  { id: 'pi', icon: 'activity' },
+  { id: 'aider', icon: 'wrench' },
+  { id: 'amp', icon: 'lightbulb' },
+  { id: 'kiro', icon: 'layers' },
+  { id: 'droid', icon: 'package' },
+  { id: 'crush', icon: 'hammer' },
+  { id: 'qwen-code', icon: 'globe' }
+]
+
+function agentIcon(id: string): IconName {
+  return AGENT_CHOICES.find((choice) => choice.id === id)?.icon ?? 'agent'
+}
 
 const pipelines = atom<Pipeline[]>([])
 const run = atom<Run | null>(null)
 const workspaces = atom<Workspace[]>([])
 const selectedPipeline = atom('selectedPipeline', '', { persist: 'plugin' })
 const selectedWorkspace = atom('selectedWorkspace', '', { persist: 'plugin' })
+const agentPicker = atom(false)
 const task = atom('task', '')
 const tab = atom('tab', 'run')
 const editing = atom<Pipeline | null>(null)
@@ -117,6 +146,7 @@ function pickPipeline(id: string): void {
 }
 
 function newPipeline(): void {
+  set(agentPicker, false)
   set(editing, {
     id: `pipeline-${Date.now()}`,
     name: 'New pipeline',
@@ -367,6 +397,7 @@ function PipelinesTab() {
               onPress={() => {
                 set(editing, entry)
                 set(selectedPipeline, entry.id)
+                set(agentPicker, false)
               }}
             />
           ))}
@@ -381,16 +412,50 @@ function PipelinesTab() {
             value={draft.name}
             onChange={(value) => set(editing, { ...draft, name: value })}
           />
+          <Field label="Agent">
+            <Stack gap="sm">
+              <Row>
+                <Button
+                  variant="outline"
+                  icon={agentIcon(draft.agent)}
+                  onPress={() => set(agentPicker, !read(agentPicker))}
+                >
+                  {draft.agent.trim() || 'Choose an agent'}
+                </Button>
+                <IconButton
+                  icon={read(agentPicker) ? 'collapse' : 'expand'}
+                  label={read(agentPicker) ? 'Hide the agent list' : 'Show the agent list'}
+                  variant="ghost"
+                  onPress={() => set(agentPicker, !read(agentPicker))}
+                />
+              </Row>
+              {read(agentPicker) ? (
+                <List label="Common agents">
+                  {AGENT_CHOICES.map((choice) => (
+                    <ListItem
+                      key={choice.id}
+                      icon={choice.icon}
+                      title={choice.id}
+                      current={choice.id === draft.agent}
+                      onPress={() => {
+                        set(editing, { ...draft, agent: choice.id })
+                        set(agentPicker, false)
+                      }}
+                    />
+                  ))}
+                </List>
+              ) : null}
+            </Stack>
+          </Field>
           <Input
-            label="Agent"
+            label="Or another agent id"
             value={draft.agent}
             placeholder="claude"
             onChange={(value) => set(editing, { ...draft, agent: value })}
           />
           <Text size="xs" muted>
-            Any agent id Orca can launch — claude, codex, opencode, gemini, copilot, cursor, grok,
-            omp, pi, aider, amp, kiro, droid, crush, qwen-code… Leave the one you use most in
-            Settings if you are unsure.
+            The list is the common ones; any agent id Orca can launch works in the field above, and
+            the list marks whichever one is set.
           </Text>
           <Text size="xs" muted>
             Each stage sends one prompt to the same agent session. Write {'{{task}}'} where the

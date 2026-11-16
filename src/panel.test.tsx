@@ -98,6 +98,37 @@ test('follows a run the worker posts', async () => {
   await view.unmount()
 })
 
+test('picks an agent from the list, with icons, including opencode', async () => {
+  const saved: { pipeline: Pipeline }[] = []
+  const view = await mount(panel, {
+    host: hostWith({
+      'pipelines.save': (input: { pipeline: Pipeline }) => (saved.push(input), { pipelines: [pipeline] })
+    })
+  })
+  await view.settled()
+
+  await view.select({ type: 'Tabs' }, 'pipelines')
+  await view.press({ role: 'button', text: 'New' })
+
+  // The picker is collapsed until pressed, then lists the common agents.
+  assert.equal(view.find({ text: 'opencode' }), null)
+  await view.press({ role: 'button', text: 'claude' })
+  assert.ok(view.find({ text: 'opencode' }))
+  assert.ok(view.find({ text: 'codex' }))
+  assert.equal(view.find({ role: 'button', text: 'claude' })?.props.icon, 'bot')
+  assert.equal(view.find({ text: 'opencode' })?.props.icon, 'terminal')
+  assert.equal(view.find({ text: 'codex' })?.props.icon, 'code')
+
+  await view.press({ text: 'opencode' })
+  assert.ok(view.find({ role: 'button', text: 'opencode' }))
+  assert.equal(view.find({ text: 'claude' }), null)
+
+  await view.press({ role: 'button', text: 'Save' })
+  assert.equal(saved[0]?.pipeline.agent, 'opencode')
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
 test('saves an edited pipeline', async () => {
   const saved: unknown[] = []
   const view = await mount(panel, {
