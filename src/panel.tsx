@@ -32,8 +32,6 @@ import {
 } from 'orca'
 import type { Pipeline, Run, Stage, StageStatus, Workspace } from './protocol'
 
-const AGENTS = ['claude', 'codex', 'cursor', 'grok', 'omp', 'pi'] as const
-
 const pipelines = atom<Pipeline[]>([])
 const run = atom<Run | null>(null)
 const workspaces = atom<Workspace[]>([])
@@ -383,12 +381,17 @@ function PipelinesTab() {
             value={draft.name}
             onChange={(value) => set(editing, { ...draft, name: value })}
           />
-          <Select
+          <Input
             label="Agent"
             value={draft.agent}
-            options={AGENTS.map((agent) => ({ value: agent, label: agent }))}
+            placeholder="claude"
             onChange={(value) => set(editing, { ...draft, agent: value })}
           />
+          <Text size="xs" muted>
+            Any agent id Orca can launch — claude, codex, opencode, gemini, copilot, cursor, grok,
+            omp, pi, aider, amp, kiro, droid, crush, qwen-code… Leave the one you use most in
+            Settings if you are unsure.
+          </Text>
           <Text size="xs" muted>
             Each stage sends one prompt to the same agent session. Write {'{{task}}'} where the
             task typed in the Run tab belongs; the first stage gets it prepended when it has none.

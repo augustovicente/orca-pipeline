@@ -339,8 +339,9 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
 
   orca.panels.handle('pipelines.save', async ({ pipeline }) => {
     if (!pipeline.name.trim()) throw new Error('A pipeline needs a name.')
+    if (!pipeline.agent.trim()) throw new Error('A pipeline needs an agent.')
     if (pipeline.stages.length === 0) throw new Error('A pipeline needs at least one stage.')
-    const saved: Pipeline = plain(pipeline)
+    const saved: Pipeline = { ...plain(pipeline), agent: pipeline.agent.trim() }
     const at = pipelines.findIndex((entry) => entry.id === saved.id)
     pipelines = at === -1 ? [...pipelines, saved] : pipelines.map((e) => (e.id === saved.id ? saved : e))
     await orca.storage.set(PIPELINES_KEY, asJson(pipelines))
@@ -384,6 +385,7 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
     const pipeline = pipelineOf(pipelineId)
     if (!pipeline) throw new Error('That pipeline no longer exists.')
     if (run && run.status === 'running') throw conflict('A run is already going.')
+    if (!pipeline.agent.trim()) throw new Error('That pipeline has no agent.')
     if (pipeline.stages.length === 0) throw new Error('That pipeline has no stages.')
 
     let workspaceName = workspaceId
