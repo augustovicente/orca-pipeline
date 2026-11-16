@@ -253,11 +253,29 @@ test('the reasoning picker names the model each level maps to', () => {
   })
   assert.deepEqual(
     options.map((option) => option.value),
-    ['', 'high', 'medium', 'low']
+    ['inherit', 'high', 'medium', 'low']
   )
   assert.match(options[1]?.label ?? '', /High — opencode-go\/deepseek-v4\.1-flash/)
   assert.match(options[2]?.label ?? '', /Medium — opencode\/mimo-v2\.6-flash-free/)
   assert.match(options[3]?.label ?? '', /Low — opencode-go\/beam-free/)
+})
+
+test('the pipeline editor draws its pickers without a placeholder', async () => {
+  const view = await mount(panel, { host: hostWith({}) })
+  await view.settled()
+  await view.select({ type: 'Tabs' }, 'pipelines')
+  await view.press({ label: 'Feature' })
+
+  const selects = view.findAll({ type: 'Select' })
+  assert.ok(selects.length >= 2, `expected the pipeline and stage pickers, saw ${selects.length}`)
+  const labels = selects.map((element) => element.props.label)
+  assert.ok(labels.includes('Reasoning for its stages'))
+  assert.ok(labels.includes('Reasoning'))
+  // Orca draws a placeholder when a control's props are refused; nothing here should be.
+  assert.equal(view.find({ text: /not available in this version/ }), null)
+  assert.deepEqual(view.errors, [])
+  assert.deepEqual(view.warnings, [])
+  await view.unmount()
 })
 
 test('saves an edited pipeline', async () => {

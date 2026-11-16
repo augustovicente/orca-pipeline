@@ -65,7 +65,7 @@ const levels = atom<Record<Reasoning, { agent: string; model: string }>>({
   low: { agent: '', model: '' }
 })
 const task = atom('task', '')
-const tab = atom('tab', 'run')
+const tab = atom('tab', 'run', { persist: 'plugin' })
 const editing = atom<Pipeline | null>(null)
 const notice = atom<string | null>(null)
 const busy = atom(false)
@@ -508,7 +508,8 @@ export function reasoningOptions(current: Record<Reasoning, { agent: string; mod
     label: `${title} — ${current[level].model || 'no model set'}`
   })
   return [
-    { value: '', label: 'Inherit — the pipeline’s level, then the agent default' },
+    // Orca refuses an empty option value (requiredLabel is min(1)), so "inherit" is a sentinel.
+    { value: 'inherit', label: 'Inherit — the pipeline’s level, then the agent default' },
     one('high', 'High'),
     one('medium', 'Medium'),
     one('low', 'Low')
@@ -665,12 +666,12 @@ function PipelinesTab() {
           />
           <Select
             label="Reasoning for its stages"
-            value={draft.reasoning ?? ''}
+            value={draft.reasoning ?? 'inherit'}
             options={reasoningOptions(read(levels))}
             onChange={(value) =>
               set(editing, {
                 ...draft,
-                reasoning: value === '' ? undefined : (value as Reasoning)
+                reasoning: value === 'inherit' ? undefined : (value as Reasoning)
               })
             }
           />
@@ -703,11 +704,11 @@ function PipelinesTab() {
                 />
                 <Select
                   label="Reasoning"
-                  value={stage.reasoning ?? ''}
+                  value={stage.reasoning ?? 'inherit'}
                   options={reasoningOptions(read(levels))}
                   onChange={(value) =>
                     editStage(index, {
-                      reasoning: value === '' ? undefined : (value as Reasoning)
+                      reasoning: value === 'inherit' ? undefined : (value as Reasoning)
                     })
                   }
                 />

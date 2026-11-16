@@ -74,6 +74,19 @@ export default defineCheck({
       'workspace.list': workspaceList
     }
   },
+  'pipeline editor': {
+    // The editor only draws on its own tab; this is what catches a component Orca refuses.
+    persisted: { plugin: { tab: 'pipelines', selectedPipeline: 'qa-value' } },
+    storage: { runs: [] },
+    results: {
+      'workspace.readContext': { branch: 'main', displayName: 'demo', terminals: [] },
+      'workspace.list': workspaceList
+    }
+  },
+  'settings tab': {
+    persisted: { plugin: { tab: 'settings' } },
+    storage: { runs: [] }
+  },
   'one run a time': {
     settings: { maxParallelRuns: 1 },
     storage: { runs: [run({ id: 'run-1', pipelineId: 'bugfix' })] },
