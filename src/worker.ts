@@ -135,24 +135,39 @@ async function rescue(
     )
     return
   }
-  // The launch call could not hand the prompt over; type it in like any later stage.
-  try {
-    const stage = run.stages[index]
-    const declared = pipelineOf(run.pipelineId)?.stages.find((item) => item.id === stage?.stageId)
-    await orca.host.call('terminal.sendText', {
-      terminalId: run.terminalId,
-      text: promptFor(
-        declared ?? { id: stage?.stageId ?? 'stage', name: stage?.stageId ?? 'stage', prompt: '' },
-        index,
-        run.task
-      ),
-      enter: true
-    })
-  } catch {
-    await fail(orca, run, index, 'The prompt could not be delivered to the agent terminal.')
-    return
+  const terminalId = run.terminalId
+  const stage = run.stages[index]
+  const declared = pipelineOf(run.pipelineId)?.stages.find((item) => item.id === stage?.stageId)
+  const text = promptFor(
+    declared ?? { id: stage?.stageId ?? 'stage', name: stage?.stageId ?? 'stage', prompt: '' },
+    index,
+    run.task
+  )
+
+  // The launch call could not hand the prompt over (Orca logs
+  // agent_launch_terminal_not_running_agent for an agent it cannot confirm yet). Type it instead,
+  // and give a TUI that boots slowly more than one try.
+  let last = 'no answer from the terminal'
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const sent = await orca.host.call('terminal.sendText', {
+        terminalId,
+        text,
+        enter: true
+      })
+      if (sent.accepted) {
+        armStartup(orca, run, index, false)
+        return
+      }
+      last = 'the terminal refused the input'
+    } catch (error) {
+      last = message(error)
+    }
+    orca.log(`run.output: retrying the prompt for ${run.id} (${last})`)
+    await new Promise((resolve) => setTimeout(resolve, 15_000))
+    if (sawWorking.get(run.id)) return
   }
-  armStartup(orca, run, index, false)
+  await fail(orca, run, index, `The prompt could not be delivered to the agent terminal (${last}).`)
 }
 
 function armTimer(orca: OrcaWorkerApi, run: Run, index: number): void {
