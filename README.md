@@ -174,8 +174,8 @@ change starts a new one. When a model spends its *Tries per model*, the next ent
 models* starts, and the stage fails only when the chain is spent — naming the models it tried.
 
 The shipped flows carry levels already: plan/risk/audit-style stages are `high`, the working stages
-`medium`, environment and cheap verification `low`. An install that predates this adopts those levels
-once, without touching a stage that already names a model or level.
+`medium`, environment and cheap verification `low`. A stage that names neither a model nor a level takes its shipped level on every load,
+so an older install picks them up without touching anything you set yourself.
 
 ## Inspired by Worca
 

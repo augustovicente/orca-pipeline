@@ -613,24 +613,29 @@ async function adoptDefaultAgent(orca: OrcaWorkerApi, list: Pipeline[]): Promise
   return next
 }
 
-/** One-shot: the seeded flows take the reasoning level shipped with each of their stages. */
+/**
+ * Gives a seeded stage the reasoning level shipped with it, whenever it has neither a level nor a
+ * model of its own. Self-healing on every load: a flag would be burned by a failed upgrade, and the
+ * shipped level is the default anyway once a stage stops naming one.
+ */
 async function adoptReasoning(orca: OrcaWorkerApi, list: Pipeline[]): Promise<Pipeline[]> {
-  if ((await orca.storage.get(REASONING_SEEDS_KEY)) === true) return list
   const seeds = new Map(DEFAULT_PIPELINES.map((seed) => [seed.id, seed]))
   let changed = false
   const next = list.map((entry) => {
     const seed = seeds.get(entry.id)
     if (!seed) return entry
+    let touched = false
     const stages = entry.stages.map((stage) => {
       const shipped = seed.stages.find((item) => item.id === stage.id)
       if (!shipped?.reasoning || stage.reasoning || stage.model?.trim()) return stage
-      changed = true
+      touched = true
       return { ...stage, reasoning: shipped.reasoning }
     })
-    return changed ? { ...entry, stages } : entry
+    if (!touched) return entry
+    changed = true
+    return { ...entry, stages }
   })
   if (changed) await orca.storage.set(PIPELINES_KEY, asJson(next))
-  await orca.storage.set(REASONING_SEEDS_KEY, true)
   return next
 }
 
