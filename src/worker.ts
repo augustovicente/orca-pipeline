@@ -595,6 +595,13 @@ async function storedRuns(orca: OrcaWorkerApi): Promise<Run[]> {
     }
   }
   for (const run of list) {
+    // Runs written before 0.9.0 have no model bookkeeping; fill it in rather than crash the panel.
+    run.model ??= null
+    run.modelIndex ??= 0
+    run.attempt ??= 0
+    run.triedModels ??= []
+  }
+  for (const run of list) {
     if (run.status !== 'running') continue
     // The process waiting for that agent is gone; ask the person to carry on.
     const stage = run.stages[run.stageIndex]

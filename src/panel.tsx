@@ -255,6 +255,7 @@ function RunCard({ run }: { run: Run }) {
   const running = run.status === 'running'
   const blocked = run.status === 'blocked'
   const text = read(outputs)[run.id]
+  const tried = run.triedModels ?? []
   return (
     <Collapsible
       title={run.pipelineName}
@@ -329,7 +330,7 @@ function RunCard({ run }: { run: Run }) {
         <Text size="xs" muted>
           {`Started ${new Date(run.startedAt).toLocaleTimeString()} with ${run.agent}${
             run.model ? ` · ${run.model}` : ''
-          }${run.triedModels.length > 1 ? ` · tried ${run.triedModels.join(' → ')}` : ''}`}
+          }${tried.length > 1 ? ` · tried ${tried.join(' → ')}` : ''}`}
         </Text>
       </Stack>
     </Collapsible>

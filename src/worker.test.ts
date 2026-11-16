@@ -240,6 +240,9 @@ test('adopts a single-run install, and finishes a run it finds running', async (
   const state = await worker.request('run.state')
   assert.equal(state.runs.length, 1)
   assert.equal(state.runs[0]?.id, 'run-legacy')
+  // A run written before models existed gets the bookkeeping filled in, not a crashed panel.
+  assert.deepEqual(state.runs[0]?.triedModels, [])
+  assert.equal(state.runs[0]?.model, null)
   // The process that waited on that agent is gone, so it is paused, not silently running.
   assert.equal(state.runs[0]?.status, 'blocked')
   assert.match(state.runs[0]?.stages[1]?.note ?? '', /restarted/)

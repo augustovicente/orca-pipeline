@@ -1,7 +1,7 @@
 {
   "name": "orca-pipeline",
   "private": true,
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Staged workflows for Orca agents: plan, build, test and review in one agent session.",
   "scripts": {
     "validate": "orca plugin validate .",
