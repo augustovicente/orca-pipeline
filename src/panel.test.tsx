@@ -48,7 +48,7 @@ function hostWith(requests: Record<string, unknown>) {
       'workspace.readContext': { branch: 'main', displayName: 'demo', terminals: [] }
     },
     requests: {
-      'run.state': { run: null, pipelines: [pipeline], defaultAgent: 'claude' },
+      'run.state': { run: null, pipelines: [pipeline], defaultAgent: 'claude', availableAgents: ['claude', 'codex', 'opencode'] },
       'workspaces.list': { workspaces: [workspace] },
       ...requests
     }

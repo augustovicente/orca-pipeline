@@ -6,6 +6,7 @@
 // orca.storage.
 import type { JsonValue } from 'orca/worker'
 import type { OrcaWorkerApi } from 'orca/worker'
+import { detectInstalledAgents } from './agent-detect'
 import { DEFAULT_PIPELINES } from './defaults'
 import type { Pipeline, Run, Stage, StageState, Workspace } from './protocol'
 
@@ -26,6 +27,8 @@ let notify = true
  * running in the focused workspace, else claude.
  */
 let defaultAgent = 'claude'
+/** Agent ids whose CLI is installed here; the picker offers only these. */
+let availableAgents: string[] = []
 
 let pipelines: Pipeline[] = []
 let run: Run | null = null
@@ -365,6 +368,7 @@ async function resolveDefaultAgent(orca: OrcaWorkerApi): Promise<string> {
   } catch {
     // No focused workspace, or no agent in it yet.
   }
+  if (availableAgents[0]) return availableAgents[0]
   return 'claude'
 }
 
@@ -373,6 +377,7 @@ function conflict(text: string): Error {
 }
 
 export default async function activate(orca: OrcaWorkerApi): Promise<void> {
+  availableAgents = detectInstalledAgents()
   await readSettings(orca)
   pipelines = await adoptDefaultAgent(orca, await storedPipelines(orca))
   run = await storedRun(orca)
@@ -425,11 +430,16 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
     return { workspaces }
   })
 
-  orca.panels.handle('run.state', () => ({
-    run: run === null ? null : plain(run),
-    pipelines: plain(pipelines),
-    defaultAgent
-  }))
+  orca.panels.handle('run.state', () => {
+    // Re-read the machine each time the panel asks, so an agent installed since activation shows up.
+    availableAgents = detectInstalledAgents()
+    return {
+      run: run === null ? null : plain(run),
+      pipelines: plain(pipelines),
+      defaultAgent,
+      availableAgents
+    }
+  })
 
   orca.panels.handle('run.start', async ({ pipelineId, workspaceId, task }) => {
     const pipeline = pipelineOf(pipelineId)

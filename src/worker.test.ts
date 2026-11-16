@@ -131,7 +131,7 @@ test('adds a new seeded pipeline to storage that predates it, once', async () =>
   const seeded = await worker.request('pipelines.list')
   assert.deepEqual(
     seeded.pipelines.map((pipeline) => pipeline.id).sort(),
-    ['bugfix', 'feature', 'qa']
+    ['bugfix', 'feature', 'qa', 'qa-design', 'qa-functional', 'qa-value']
   )
   // The edited one is kept, not overwritten.
   assert.equal(seeded.pipelines.find((pipeline) => pipeline.id === 'feature')?.name, 'Feature')

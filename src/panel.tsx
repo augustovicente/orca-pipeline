@@ -32,32 +32,12 @@ import {
   type TableRow,
   type Tone
 } from 'orca'
+import { AGENT_CHOICES } from './agent-choices'
 import type { Pipeline, Run, Stage, StageStatus, Workspace } from './protocol'
 
-/**
- * The agents worth one click. `Select` options cannot carry an icon, so the picker is a button
- * and a List; anything not listed is still reachable through the free-text field beside it.
- */
-const AGENT_CHOICES: readonly { id: string; icon: IconName }[] = [
-  { id: 'claude', icon: 'bot' },
-  { id: 'codex', icon: 'code' },
-  { id: 'opencode', icon: 'terminal' },
-  { id: 'gemini', icon: 'star' },
-  { id: 'copilot', icon: 'cloud' },
-  { id: 'cursor', icon: 'file' },
-  { id: 'grok', icon: 'zap' },
-  { id: 'omp', icon: 'gauge' },
-  { id: 'pi', icon: 'activity' },
-  { id: 'aider', icon: 'wrench' },
-  { id: 'amp', icon: 'lightbulb' },
-  { id: 'kiro', icon: 'layers' },
-  { id: 'droid', icon: 'package' },
-  { id: 'crush', icon: 'hammer' },
-  { id: 'qwen-code', icon: 'globe' }
-]
-
+/** The icon for an agent, or the generic one for an id this build does not know. */
 function agentIcon(id: string): IconName {
-  return AGENT_CHOICES.find((choice) => choice.id === id)?.icon ?? 'agent'
+  return (AGENT_CHOICES.find((choice) => choice.id === id)?.icon ?? 'agent') as IconName
 }
 
 const pipelines = atom<Pipeline[]>([])
@@ -67,6 +47,7 @@ const selectedPipeline = atom('selectedPipeline', '', { persist: 'plugin' })
 const selectedWorkspace = atom('selectedWorkspace', '', { persist: 'plugin' })
 const agentPicker = atom(false)
 const defaultAgent = atom('claude')
+const availableAgents = atom<string[]>([])
 const task = atom('task', '')
 const tab = atom('tab', 'run')
 const editing = atom<Pipeline | null>(null)
@@ -103,6 +84,7 @@ async function refresh(): Promise<void> {
   set(pipelines, state.pipelines)
   set(run, state.run)
   set(defaultAgent, state.defaultAgent)
+  set(availableAgents, state.availableAgents ?? [])
   const listed = await plugin.request('workspaces.list')
   set(workspaces, listed.workspaces)
   if (read(selectedPipeline) === '' && state.pipelines[0]) {
@@ -432,11 +414,19 @@ function PipelinesTab() {
                 />
               </Row>
               {read(agentPicker) ? (
-                <List label="Common agents">
-                  {AGENT_CHOICES.map((choice) => (
+                <List label="Installed agents">
+                  {AGENT_CHOICES.filter((choice) => {
+                    const installed = read(availableAgents)
+                    // Until the machine reports anything, show the catalog rather than nothing.
+                    return (
+                      installed.length === 0 ||
+                      installed.includes(choice.id) ||
+                      choice.id === draft.agent
+                    )
+                  }).map((choice) => (
                     <ListItem
                       key={choice.id}
-                      icon={choice.icon}
+                      icon={choice.icon as IconName}
                       title={choice.id}
                       current={choice.id === draft.agent}
                       onPress={() => {
@@ -456,8 +446,8 @@ function PipelinesTab() {
             onChange={(value) => set(editing, { ...draft, agent: value })}
           />
           <Text size="xs" muted>
-            The list is the common ones; any agent id Orca can launch works in the field above, and
-            the list marks whichever one is set.
+            Only agents installed on this machine are listed. Any other agent id Orca can launch
+            works in the field above, and the list marks whichever one is set.
           </Text>
           <Text size="xs" muted>
             Each stage sends one prompt to the same agent session. Write {'{{task}}'} where the

@@ -26,7 +26,13 @@ your review flow.
 | --- | --- | --- |
 | **Feature** | plan → build → test → review | A change from scratch: plan first, keep the diff small, verify it, then review your own work as a strict reviewer. |
 | **QA (e2e)** | scope → cases → environment → run → report | End-to-end QA of a feature or branch: bring the app up, click through the journeys in Orca's embedded browser, and end with a pass/fail table and a verdict. |
+| **QA · UX/UI (designer)** | scope → criteria → environment → walkthrough → findings → report | A senior product designer's review of the built interface: hierarchy, spacing, type, contrast to WCAG AA, focus and tab order, empty/loading/error states, at 360/768/1440 px and in both themes — measured with `orca eval`, not eyeballed. |
+| **QA · Functionality (QA engineer)** | scope → risk → cases → environment → run → report | A risk-based functional pass: risk matrix, boundary and negative cases, roles and permissions, state transitions, idempotency, console and network errors — defects graded S1–S4 with exact steps. |
+| **QA · Product value (PM)** | scope → journey → environment → value audit → report | A commercial review: walk first impression → activation → aha → return → paywall, measure steps and time to each milestone, and judge what the product promises against what a new user gets, ranked by impact on the metric. |
 | **Bug fix** | reproduce → fix → prove | Root cause before code: reproduce it, fix the cause, prove the fix holds. |
+
+The three QA reviews share a shape — scope, then prepare, then a real end-to-end walkthrough, then
+a report file — and differ in the lens: `ux-review.md`, `qa-report.md` and `product-review.md`.
 
 Every flow is just prompts — edit them in the panel, or add your own.
 
@@ -68,7 +74,7 @@ have is a prompt.
 - **Edits pipelines in the panel.** Name, agent and stages per pipeline; `{{task}}` in a prompt is
   replaced by the task you typed.
 
-Those three ship on first run and are yours to edit. A pipeline you delete stays deleted; a new
+Those six ship on first run and are yours to edit. A pipeline you delete stays deleted; a new
 default added by a later version is appended once, without touching the ones you changed.
 
 The **QA (e2e)** flow assumes the agent can drive the app the way a person does: it opens Orca's
@@ -82,7 +88,9 @@ claude only as a last resort.
 ## Requirements
 
 - Orca `>= 1.4.248` (components panels, status bar items).
-- One of the agents Orca can launch (`claude`, `codex`, `cursor`, `grok`, `omp`, `pi`).
+- One of the agents Orca can launch, installed on the machine that runs Orca. The picker lists only
+  the ones it finds on `PATH` (plus the usual Homebrew, `~/.local/bin` and version-manager
+  directories); anything else can still be typed in.
 
 ## Install
 
