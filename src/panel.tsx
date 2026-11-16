@@ -66,7 +66,7 @@ const levels = atom<Record<Reasoning, { agent: string; model: string }>>({
 })
 const task = atom('task', '')
 const tab = atom('tab', 'run', { persist: 'plugin' })
-const editing = atom<Pipeline | null>(null)
+const editing = atom<Pipeline | null | 'closed'>(null)
 const notice = atom<string | null>(null)
 const busy = atom(false)
 /** The Settings tab's fields, as strings until saved. */
@@ -234,7 +234,7 @@ function newPipeline(): void {
 
 function editStage(index: number, patch: Partial<Stage>): void {
   const draft = read(editing)
-  if (!draft) return
+  if (!draft || draft === 'closed') return
   set(editing, {
     ...draft,
     stages: draft.stages.map((stage, at) => (at === index ? { ...stage, ...patch } : stage))
@@ -243,7 +243,7 @@ function editStage(index: number, patch: Partial<Stage>): void {
 
 function addStage(): void {
   const draft = read(editing)
-  if (!draft) return
+  if (!draft || draft === 'closed') return
   const at = draft.stages.length + 1
   set(editing, {
     ...draft,
@@ -256,14 +256,14 @@ function addStage(): void {
 
 function removeStage(index: number): void {
   const draft = read(editing)
-  if (!draft) return
+  if (!draft || draft === 'closed') return
   set(editing, { ...draft, stages: draft.stages.filter((_, at) => at !== index) })
 }
 
 function savePipeline(): void {
   void attempt(async () => {
     const draft = read(editing)
-    if (!draft) return
+    if (!draft || draft === 'closed') return
     const saved = await plugin.request('pipelines.save', { pipeline: draft })
     set(pipelines, saved.pipelines)
     set(selectedPipeline, draft.id)
@@ -274,7 +274,7 @@ function savePipeline(): void {
 function removePipeline(): void {
   void attempt(async () => {
     const draft = read(editing)
-    if (!draft) return
+    if (!draft || draft === 'closed') return
     const saved = await plugin.request('pipelines.remove', { id: draft.id })
     set(pipelines, saved.pipelines)
     if (read(selectedPipeline) === draft.id) set(selectedPipeline, saved.pipelines[0]?.id ?? '')
@@ -576,7 +576,10 @@ function SettingsTab() {
 
 function PipelinesTab() {
   const list = read(pipelines)
-  const draft = read(editing)
+  const open = read(editing)
+  // Nothing chosen yet: show the selected pipeline rather than an empty list. 'closed' means the
+  // person cancelled and wants the list only.
+  const draft = open === 'closed' ? null : (open ?? list.find((e) => e.id === read(selectedPipeline)) ?? null)
 
   return (
     <Stack gap="md">
@@ -777,7 +780,7 @@ function PipelinesTab() {
             <Button icon="check" onPress={savePipeline}>
               Save
             </Button>
-            <Button variant="ghost" onPress={() => set(editing, null)}>
+            <Button variant="ghost" onPress={() => set(editing, 'closed')}>
               Cancel
             </Button>
             <Button variant="ghost" tone="danger" icon="delete" onPress={removePipeline}>
