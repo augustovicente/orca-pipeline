@@ -20,7 +20,7 @@ export type StageState = {
   tail: string | null
 }
 
-/** One pass of a pipeline over a workspace. */
+/** One pass of a pipeline over a workspace. Runs are independent: own terminal, own agent. */
 export type Run = {
   id: string
   pipelineId: string
@@ -57,33 +57,35 @@ declare module 'orca' {
     'pipelines.remove': { input: { id: string }; output: { pipelines: Pipeline[] } }
     /** Every workspace Orca knows on this host. */
     'workspaces.list': { output: { workspaces: Workspace[] } }
-    /** The current run, if there is one, plus the pipelines, the agent new ones start with, and
-     *  the agents installed on this machine. */
+    /** Every run, newest first, plus what the panel needs to start another. */
     'run.state': {
       output: {
-        run: Run | null
+        runs: Run[]
         pipelines: Pipeline[]
         defaultAgent: string
         availableAgents: string[]
+        maxParallelRuns: number
       }
     }
-    /** Starts a pipeline in a workspace; the first stage launches the agent. */
+    /** Starts a pipeline in a workspace; the first stage launches its own agent. */
     'run.start': {
       input: { pipelineId: string; workspaceId: string; task: string }
       output: { run: Run }
     }
-    /** Stops the current run; the agent keeps its terminal. */
-    'run.stop': { output: { run: Run | null } }
-    /** Carries on after the agent was blocked. */
-    'run.resume': { output: { run: Run | null } }
-    /** Sends the current stage's prompt again. */
-    'run.retry': { output: { run: Run | null } }
-    /** Marks the current stage skipped and moves on. */
-    'run.skip': { output: { run: Run | null } }
+    /** Stops one run; its agent keeps the terminal, and the run stays in the list. */
+    'run.stop': { input: { runId: string }; output: { runs: Run[] } }
+    /** Carries on with one run after its agent was blocked. */
+    'run.resume': { input: { runId: string }; output: { runs: Run[] } }
+    /** Sends one run's current stage prompt again. */
+    'run.retry': { input: { runId: string }; output: { runs: Run[] } }
+    /** Marks one run's current stage skipped and moves it on. */
+    'run.skip': { input: { runId: string }; output: { runs: Run[] } }
+    /** Drops a finished run from the list. */
+    'run.remove': { input: { runId: string }; output: { runs: Run[] } }
   }
   interface PluginPanelEvents {
-    /** The run changed; null once there is none. */
-    'run.changed': { run: Run | null }
+    /** The run list changed, from this or another panel. */
+    'runs.changed': { runs: Run[] }
     /** The pipeline list changed, from this or another panel. */
     'pipelines.changed': { pipelines: Pipeline[] }
   }

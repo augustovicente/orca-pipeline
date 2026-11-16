@@ -1,9 +1,10 @@
-// The plugin's worker: it owns the run state machine. A stage ends its turn in the agent, the
-// worker hears `agent.status.changed`, and the next stage's prompt goes into the same terminal,
-// so every stage sees the conversation before it.
+// The plugin's worker: it owns the run state machines. Each run gets its own agent terminal; a
+// stage ends its turn in that terminal, the worker hears `agent.status.changed` for it, and the
+// next stage's prompt goes into the same terminal, so every stage sees the conversation before it.
 //
-// A save restarts the worker and drops in-memory state, so the run and the pipelines live in
-// orca.storage.
+// Runs are independent and may overlap, so nothing here is global to the plugin except the run
+// list, the pipelines and the settings. A save restarts the worker and drops in-memory state, so
+// the runs and the pipelines live in orca.storage.
 import type { JsonValue } from 'orca/worker'
 import type { OrcaWorkerApi } from 'orca/worker'
 import { detectInstalledAgents } from './agent-detect'
@@ -15,26 +16,32 @@ const PIPELINES_KEY = 'pipelines'
 const SEEDED_KEY = 'seeded'
 /** Set once the seeded flows have picked up the resolved default agent. */
 const AGENT_SEEDS_KEY = 'seedAgentMigrated'
-const RUN_KEY = 'run'
+const RUNS_KEY = 'runs'
+/** Written by 0.4.x, which kept one run at a time; adopted into `runs` on activation. */
+const LEGACY_RUN_KEY = 'run'
 const STATUS_BAR_ID = 'run'
+/** Finished runs kept for reference; older ones are dropped. */
+const KEEP_FINISHED = 12
 
 /** Cached settings: the worker re-reads them when the person changes one. */
 let stageTimeoutMinutes = 20
 let notify = true
-/**
- * What a new pipeline, and the seeded ones, use. Orca keeps its own default agent in settings
- * that plugins cannot read, so this is: the `defaultAgent` setting when set, else the agent
- * running in the focused workspace, else claude.
- */
+let maxParallelRuns = 3
+
+/** What a new pipeline, and the seeded ones, use. Orca keeps its own default agent in settings
+ *  that plugins cannot read, so this is: the `defaultAgent` setting when set, else the agent
+ *  running in the focused workspace, else the first installed one, else claude. */
 let defaultAgent = 'claude'
 /** Agent ids whose CLI is installed here; the picker offers only these. */
 let availableAgents: string[] = []
 
 let pipelines: Pipeline[] = []
-let run: Run | null = null
-let timer: ReturnType<typeof setTimeout> | null = null
-/** Whether this stage has reported `working` yet; a stage cannot be done before it starts. */
-let sawWorking = false
+/** Newest first. */
+let runs: Run[] = []
+/** Stage timeouts, by run id. */
+const timers = new Map<string, ReturnType<typeof setTimeout>>()
+/** Whether each run's current stage has reported `working`; a stage cannot be done before it starts. */
+const sawWorking = new Map<string, boolean>()
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -49,9 +56,12 @@ function asJson(value: unknown): JsonValue {
   return plain(value) as JsonValue
 }
 
-function stageNow(): StageState | null {
-  if (!run) return null
-  return run.stages[run.stageIndex] ?? null
+function runById(id: string): Run | undefined {
+  return runs.find((entry) => entry.id === id)
+}
+
+function currentStage(run: Run): StageState | undefined {
+  return run.stages[run.stageIndex]
 }
 
 function pipelineOf(id: string): Pipeline | undefined {
@@ -65,59 +75,66 @@ function promptFor(stage: Stage, index: number, task: string): string {
   return task.trim() ? `Task: ${task.trim()}\n\n${body}` : body
 }
 
-function clearTimer(): void {
-  if (timer === null) return
+function clearTimer(runId: string): void {
+  const timer = timers.get(runId)
+  if (timer === undefined) return
   clearTimeout(timer)
-  timer = null
+  timers.delete(runId)
 }
 
-function armTimer(orca: OrcaWorkerApi, index: number): void {
-  clearTimer()
+function armTimer(orca: OrcaWorkerApi, run: Run, index: number): void {
+  clearTimer(run.id)
   const minutes = Math.min(240, Math.max(1, stageTimeoutMinutes))
-  timer = setTimeout(() => {
-    timer = null
-    void fail(orca, index, `No completion signal after ${minutes} min.`)
+  const timer = setTimeout(() => {
+    timers.delete(run.id)
+    void fail(orca, run, index, `No completion signal after ${minutes} min.`)
   }, minutes * 60_000)
   // Never hold the process open for a pending stage.
   const unrefable = timer as unknown as { unref?: () => void }
   unrefable.unref?.()
+  timers.set(run.id, timer)
+}
+
+function activeRuns(): Run[] {
+  return runs.filter((run) => run.status === 'running' || run.status === 'blocked')
 }
 
 function setStatusBar(orca: OrcaWorkerApi): void {
   if (!orca.host.has('statusBar.update')) return
-  const done = run ? run.stages.filter((stage) => stage.status === 'done').length : 0
-  const total = run ? run.stages.length : 0
+  const active = activeRuns()
+  const blocked = active.filter((run) => run.status === 'blocked').length
   const text =
-    run === null
+    active.length === 0
       ? ''
-      : run.status === 'running'
-        ? `${done}/${total} ${run.stages[run.stageIndex]?.stageId ?? ''}`.trim()
-        : run.status
-  const tone =
-    run?.status === 'done'
-      ? 'success'
-      : run?.status === 'failed'
-        ? 'danger'
-        : run?.status === 'blocked'
-          ? 'warning'
-          : 'accent'
+      : blocked > 0
+        ? `${active.length} running · ${blocked} needs you`
+        : `${active.length} running`
   orca.host
     .call('statusBar.update', {
       id: STATUS_BAR_ID,
       text,
-      icon: run?.status === 'running' ? 'activity' : 'layers',
-      tone,
-      visible: run !== null
+      icon: active.length > 0 ? 'activity' : 'layers',
+      tone: blocked > 0 ? 'warning' : 'accent',
+      visible: active.length > 0
     })
     .catch(() => undefined)
 }
 
 function show(orca: OrcaWorkerApi): void {
-  orca.panels.post('run.changed', { run: run === null ? null : plain(run) })
+  orca.panels.post('runs.changed', { runs: plain(runs) })
+}
+
+/** Drops the oldest finished runs once too many are kept. */
+function prune(): void {
+  const finished = runs.filter((run) => run.status !== 'running' && run.status !== 'blocked')
+  if (finished.length <= KEEP_FINISHED) return
+  const drop = new Set(finished.slice(KEEP_FINISHED).map((run) => run.id))
+  runs = runs.filter((run) => !drop.has(run.id))
 }
 
 async function persist(orca: OrcaWorkerApi): Promise<void> {
-  await orca.storage.set(RUN_KEY, asJson(run))
+  prune()
+  await orca.storage.set(RUNS_KEY, asJson(runs))
   show(orca)
   setStatusBar(orca)
 }
@@ -127,8 +144,12 @@ function tell(orca: OrcaWorkerApi, title: string, body: string): void {
   orca.host.call('notifications.show', { title, body }).catch(() => undefined)
 }
 
-async function readTail(orca: OrcaWorkerApi): Promise<string | null> {
-  if (!run?.terminalId) return null
+function label(run: Run): string {
+  return `${run.pipelineName} in ${run.workspaceName}`
+}
+
+async function readTail(orca: OrcaWorkerApi, run: Run): Promise<string | null> {
+  if (!run.terminalId) return null
   try {
     const read = await orca.host.call('terminal.read', {
       terminalId: run.terminalId,
@@ -141,8 +162,7 @@ async function readTail(orca: OrcaWorkerApi): Promise<string | null> {
   }
 }
 
-async function startStage(orca: OrcaWorkerApi, index: number): Promise<void> {
-  if (!run) return
+async function startStage(orca: OrcaWorkerApi, run: Run, index: number): Promise<void> {
   const stage = run.stages[index]
   if (!stage) return
   const declared = pipelineOf(run.pipelineId)?.stages.find((entry) => entry.id === stage.stageId)
@@ -154,9 +174,9 @@ async function startStage(orca: OrcaWorkerApi, index: number): Promise<void> {
   stage.endedAt = null
   stage.note = null
   stage.tail = null
-  sawWorking = false
+  sawWorking.set(run.id, false)
   await persist(orca)
-  armTimer(orca, index)
+  armTimer(orca, run, index)
 
   const prompt = promptFor(
     declared ?? { id: stage.stageId, name: stage.stageId, prompt: '' },
@@ -182,57 +202,64 @@ async function startStage(orca: OrcaWorkerApi, index: number): Promise<void> {
       if (!sent.accepted) throw new Error('The terminal did not accept the prompt.')
     }
   } catch (error) {
-    await fail(orca, index, message(error))
+    await fail(orca, run, index, message(error))
   }
 }
 
-async function finishStage(orca: OrcaWorkerApi, index: number, note: string | null): Promise<void> {
-  if (!run) return
+async function finishStage(
+  orca: OrcaWorkerApi,
+  run: Run,
+  index: number,
+  note: string | null
+): Promise<void> {
   const stage = run.stages[index]
   if (!stage) return
-  clearTimer()
+  clearTimer(run.id)
   stage.status = 'done'
   stage.endedAt = Date.now()
   stage.note = note
-  stage.tail = await readTail(orca)
+  stage.tail = await readTail(orca, run)
 
   if (index >= run.stages.length - 1) {
     run.status = 'done'
     run.endedAt = Date.now()
     await persist(orca)
-    tell(orca, 'Pipeline complete', `${run.pipelineName} finished in ${run.workspaceName}.`)
+    tell(orca, 'Pipeline complete', label(run))
     return
   }
   await persist(orca)
-  await startStage(orca, index + 1)
+  await startStage(orca, run, index + 1)
 }
 
-async function fail(orca: OrcaWorkerApi, index: number, reason: string): Promise<void> {
-  if (!run) return
-  clearTimer()
+async function fail(
+  orca: OrcaWorkerApi,
+  run: Run,
+  index: number,
+  reason: string
+): Promise<void> {
+  clearTimer(run.id)
   const stage = run.stages[index]
   if (stage) {
     stage.status = 'failed'
     stage.note = reason
     stage.endedAt = Date.now()
-    stage.tail = await readTail(orca)
+    stage.tail = await readTail(orca, run)
   }
   run.status = 'failed'
   run.endedAt = Date.now()
   await persist(orca)
-  tell(orca, 'Pipeline failed', `${run.pipelineName}: ${reason}`)
+  tell(orca, 'Pipeline failed', `${label(run)}: ${reason}`)
 }
 
-async function block(orca: OrcaWorkerApi, note: string): Promise<void> {
-  if (!run) return
-  const stage = stageNow()
+async function block(orca: OrcaWorkerApi, run: Run, note: string): Promise<void> {
+  const stage = currentStage(run)
   if (!stage) return
-  clearTimer()
+  clearTimer(run.id)
   run.status = 'blocked'
   stage.status = 'blocked'
   stage.note = note
   await persist(orca)
-  tell(orca, 'Pipeline needs you', `${run.pipelineName}: ${note}`)
+  tell(orca, 'Pipeline needs you', `${label(run)}: ${note}`)
 }
 
 async function onAgentStatus(
@@ -243,34 +270,35 @@ async function onAgentStatus(
     mainAgent?: { state: string; outcome?: string }
   }
 ): Promise<void> {
+  if (!event.terminalId) return
+  const run = runs.find((entry) => entry.terminalId === event.terminalId)
   if (!run || run.status !== 'running') return
-  if (!event.terminalId || event.terminalId !== run.terminalId) return
-  const stage = stageNow()
+  const stage = currentStage(run)
   if (!stage || stage.status !== 'running') return
   const index = run.stageIndex
 
   if (event.state === 'working') {
-    sawWorking = true
+    sawWorking.set(run.id, true)
     return
   }
   if (event.state === 'blocked') {
-    await block(orca, 'The agent is waiting for you in its terminal.')
+    await block(orca, run, 'The agent is waiting for you in its terminal.')
     return
   }
   // `waiting` is an idle agent whose turn ended; `done` is the same with a finished turn.
   if (event.state !== 'waiting' && event.state !== 'done') return
-  if (!sawWorking && Date.now() - (stage.startedAt ?? Date.now()) < 2500) return
+  if (!sawWorking.get(run.id) && Date.now() - (stage.startedAt ?? Date.now()) < 2500) return
 
   const outcome = event.mainAgent?.outcome
   if (outcome === 'failure') {
-    await fail(orca, index, 'The agent reported a failed turn.')
+    await fail(orca, run, index, 'The agent reported a failed turn.')
     return
   }
   if (outcome === 'interruption' || outcome === 'cancellation' || outcome === 'superseded') {
-    await fail(orca, index, `The turn ended as ${outcome}.`)
+    await fail(orca, run, index, `The turn ended as ${outcome}.`)
     return
   }
-  await finishStage(orca, index, null)
+  await finishStage(orca, run, index, null)
 }
 
 async function storedPipelines(orca: OrcaWorkerApi): Promise<Pipeline[]> {
@@ -302,23 +330,6 @@ async function storedPipelines(orca: OrcaWorkerApi): Promise<Pipeline[]> {
   return next
 }
 
-async function storedRun(orca: OrcaWorkerApi): Promise<Run | null> {
-  const stored = await orca.storage.get(RUN_KEY)
-  if (stored === null || typeof stored !== 'object' || Array.isArray(stored)) return null
-  const restored = plain(stored) as Run
-  if (restored.status === 'running') {
-    // The process that was waiting for the agent is gone; ask the person to carry on.
-    const stage = restored.stages[restored.stageIndex]
-    if (stage) {
-      stage.status = 'blocked'
-      stage.note = 'Orca restarted while this stage was running.'
-    }
-    restored.status = 'blocked'
-    await orca.storage.set(RUN_KEY, asJson(restored))
-  }
-  return restored
-}
-
 /** One-shot: an install whose seeded flows still say `claude` adopts the resolved default. */
 async function adoptDefaultAgent(orca: OrcaWorkerApi, list: Pipeline[]): Promise<Pipeline[]> {
   if ((await orca.storage.get(AGENT_SEEDS_KEY)) === true) return list
@@ -334,22 +345,31 @@ async function adoptDefaultAgent(orca: OrcaWorkerApi, list: Pipeline[]): Promise
   return next
 }
 
-async function readSettings(orca: OrcaWorkerApi): Promise<void> {
-  try {
-    const timeout = await orca.settings.get('stageTimeoutMinutes')
-    if (typeof timeout === 'number' && Number.isFinite(timeout)) stageTimeoutMinutes = timeout
-    const shouldNotify = await orca.settings.get('notify')
-    if (typeof shouldNotify === 'boolean') notify = shouldNotify
-  } catch {
-    // Settings are optional; the defaults above apply.
+async function storedRuns(orca: OrcaWorkerApi): Promise<Run[]> {
+  const stored = await orca.storage.get(RUNS_KEY)
+  let list: Run[] = Array.isArray(stored) ? (plain(stored) as Run[]) : []
+  if (list.length === 0) {
+    // 0.4.x wrote a single run here; keep it as the first entry instead of losing it.
+    const legacy = await orca.storage.get(LEGACY_RUN_KEY)
+    if (legacy !== null && typeof legacy === 'object' && !Array.isArray(legacy)) {
+      list = [plain(legacy) as Run]
+      await orca.storage.set(RUNS_KEY, asJson(list))
+    }
   }
-  defaultAgent = await resolveDefaultAgent(orca)
+  for (const run of list) {
+    if (run.status !== 'running') continue
+    // The process waiting for that agent is gone; ask the person to carry on.
+    const stage = run.stages[run.stageIndex]
+    if (stage) {
+      stage.status = 'blocked'
+      stage.note = 'Orca restarted while this stage was running.'
+    }
+    run.status = 'blocked'
+  }
+  if (list.some((run) => run.status === 'blocked')) await orca.storage.set(RUNS_KEY, asJson(list))
+  return list
 }
 
-/**
- * The agent to put on new pipelines. A pinned agent wins; otherwise the agent working in the
- * focused workspace is the best available signal, since Orca does not expose its own default.
- */
 async function resolveDefaultAgent(orca: OrcaWorkerApi): Promise<string> {
   try {
     const pinned = await orca.settings.get('defaultAgent')
@@ -372,15 +392,35 @@ async function resolveDefaultAgent(orca: OrcaWorkerApi): Promise<string> {
   return 'claude'
 }
 
+async function readSettings(orca: OrcaWorkerApi): Promise<void> {
+  try {
+    const timeout = await orca.settings.get('stageTimeoutMinutes')
+    if (typeof timeout === 'number' && Number.isFinite(timeout)) stageTimeoutMinutes = timeout
+    const shouldNotify = await orca.settings.get('notify')
+    if (typeof shouldNotify === 'boolean') notify = shouldNotify
+    const parallel = await orca.settings.get('maxParallelRuns')
+    if (typeof parallel === 'number' && Number.isFinite(parallel)) {
+      maxParallelRuns = Math.min(8, Math.max(1, Math.round(parallel)))
+    }
+  } catch {
+    // Settings are optional; the defaults above apply.
+  }
+  defaultAgent = await resolveDefaultAgent(orca)
+}
+
 function conflict(text: string): Error {
   return Object.assign(new Error(text), { code: 'conflict' })
+}
+
+function missing(): Error {
+  return Object.assign(new Error('That run is no longer here.'), { code: 'invalid_params' })
 }
 
 export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   availableAgents = detectInstalledAgents()
   await readSettings(orca)
   pipelines = await adoptDefaultAgent(orca, await storedPipelines(orca))
-  run = await storedRun(orca)
+  runs = await storedRuns(orca)
   setStatusBar(orca)
 
   orca.settings.onDidChange(() => void readSettings(orca))
@@ -397,7 +437,8 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
     if (pipeline.stages.length === 0) throw new Error('A pipeline needs at least one stage.')
     const saved: Pipeline = { ...plain(pipeline), agent: pipeline.agent.trim() }
     const at = pipelines.findIndex((entry) => entry.id === saved.id)
-    pipelines = at === -1 ? [...pipelines, saved] : pipelines.map((e) => (e.id === saved.id ? saved : e))
+    pipelines =
+      at === -1 ? [...pipelines, saved] : pipelines.map((e) => (e.id === saved.id ? saved : e))
     await orca.storage.set(PIPELINES_KEY, asJson(pipelines))
     orca.panels.post('pipelines.changed', { pipelines: plain(pipelines) })
     return { pipelines: plain(pipelines) }
@@ -434,19 +475,24 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
     // Re-read the machine each time the panel asks, so an agent installed since activation shows up.
     availableAgents = detectInstalledAgents()
     return {
-      run: run === null ? null : plain(run),
+      runs: plain(runs),
       pipelines: plain(pipelines),
       defaultAgent,
-      availableAgents
+      availableAgents,
+      maxParallelRuns
     }
   })
 
   orca.panels.handle('run.start', async ({ pipelineId, workspaceId, task }) => {
     const pipeline = pipelineOf(pipelineId)
     if (!pipeline) throw new Error('That pipeline no longer exists.')
-    if (run && run.status === 'running') throw conflict('A run is already going.')
     if (!pipeline.agent.trim()) throw new Error('That pipeline has no agent.')
     if (pipeline.stages.length === 0) throw new Error('That pipeline has no stages.')
+    if (activeRuns().length >= maxParallelRuns) {
+      throw conflict(
+        `${maxParallelRuns} run${maxParallelRuns === 1 ? '' : 's'} at a time is the limit; stop one or raise it in Settings.`
+      )
+    }
 
     let workspaceName = workspaceId
     try {
@@ -457,8 +503,8 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
       // The name is cosmetic; the id is what the host needs.
     }
 
-    const next: Run = {
-      id: `run-${Date.now()}`,
+    const run: Run = {
+      id: `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       pipelineId: pipeline.id,
       pipelineName: pipeline.name,
       workspaceId,
@@ -479,17 +525,18 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
       startedAt: Date.now(),
       endedAt: null
     }
-    run = next
+    runs = [run, ...runs]
     await persist(orca)
-    await startStage(orca, 0)
-    return { run: plain(next) }
+    await startStage(orca, run, 0)
+    return { run: plain(run) }
   })
 
-  orca.panels.handle('run.stop', async () => {
-    if (!run) return { run: null }
-    clearTimer()
-    const stage = stageNow()
-    if (stage && stage.status === 'running') {
+  orca.panels.handle('run.stop', async ({ runId }) => {
+    const run = runById(runId)
+    if (!run) throw missing()
+    clearTimer(run.id)
+    const stage = currentStage(run)
+    if (stage && (stage.status === 'running' || stage.status === 'blocked')) {
       stage.status = 'skipped'
       stage.note = 'Stopped.'
       stage.endedAt = Date.now()
@@ -497,35 +544,39 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
     run.status = 'stopped'
     run.endedAt = Date.now()
     await persist(orca)
-    return { run: plain(run) }
+    return { runs: plain(runs) }
   })
 
-  orca.panels.handle('run.resume', async () => {
-    if (!run || run.status !== 'blocked') return { run: run === null ? null : plain(run) }
-    const stage = stageNow()
+  orca.panels.handle('run.resume', async ({ runId }) => {
+    const run = runById(runId)
+    if (!run) throw missing()
+    if (run.status !== 'blocked') return { runs: plain(runs) }
+    const stage = currentStage(run)
     if (stage) {
       stage.status = 'running'
       stage.note = null
     }
     run.status = 'running'
-    sawWorking = false
+    sawWorking.set(run.id, false)
     await persist(orca)
-    armTimer(orca, run.stageIndex)
-    return { run: plain(run) }
+    armTimer(orca, run, run.stageIndex)
+    return { runs: plain(runs) }
   })
 
-  orca.panels.handle('run.retry', async () => {
-    if (!run) return { run: null }
-    if (run.status === 'running') throw conflict('The stage is still running.')
-    await startStage(orca, run.stageIndex)
-    return { run: plain(run) }
+  orca.panels.handle('run.retry', async ({ runId }) => {
+    const run = runById(runId)
+    if (!run) throw missing()
+    if (run.status === 'running') throw conflict('That stage is still running.')
+    await startStage(orca, run, run.stageIndex)
+    return { runs: plain(runs) }
   })
 
-  orca.panels.handle('run.skip', async () => {
-    if (!run) return { run: null }
-    if (run.status === 'running') throw conflict('Stop the run before skipping a stage.')
-    clearTimer()
-    const stage = stageNow()
+  orca.panels.handle('run.skip', async ({ runId }) => {
+    const run = runById(runId)
+    if (!run) throw missing()
+    if (run.status === 'running') throw conflict('Stop that run before skipping a stage.')
+    clearTimer(run.id)
+    const stage = currentStage(run)
     if (stage) {
       stage.status = 'skipped'
       stage.note = 'Skipped.'
@@ -536,13 +587,25 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
       run.status = 'done'
       run.endedAt = Date.now()
       await persist(orca)
-      return { run: plain(run) }
+      return { runs: plain(runs) }
     }
-    await startStage(orca, next)
-    return { run: plain(run) }
+    await startStage(orca, run, next)
+    return { runs: plain(runs) }
+  })
+
+  orca.panels.handle('run.remove', async ({ runId }) => {
+    const run = runById(runId)
+    if (!run) throw missing()
+    if (run.status === 'running' || run.status === 'blocked') {
+      throw conflict('Stop that run before removing it.')
+    }
+    runs = runs.filter((entry) => entry.id !== runId)
+    await persist(orca)
+    return { runs: plain(runs) }
   })
 }
 
 export function deactivate(): void {
-  clearTimer()
+  for (const timer of timers.values()) clearTimeout(timer)
+  timers.clear()
 }

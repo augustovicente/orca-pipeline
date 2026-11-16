@@ -66,6 +66,9 @@ have is a prompt.
   same terminal, so the agent keeps its context.
 - **Moves on when a stage is done.** The plugin listens for `agent.status.changed`: when the agent
   finishes its turn, the next stage starts. No polling, no waiting on the person.
+- **Runs several at once.** Up to three runs in parallel by default — each with its own agent
+  terminal, its own stage table and its own controls. One run waiting on you never stalls another;
+  set the ceiling under Settings → Pipeline → *Runs at a time* (1 = strictly sequential).
 - **Stops when you are needed.** A blocked agent pauses the run and notifies you. Press *Carry on*
   after you answer it in the terminal; *Retry stage* and *Skip stage* are there when a stage goes
   wrong.
@@ -141,13 +144,16 @@ pipeline without the second runtime.
 
 ## How it works
 
-- `src/worker.ts` owns the run state machine. A stage starts (`agent.launch` for the first one,
-  `terminal.sendText` after that), and `agent.status.changed` for that terminal ends it. The run
-  lives in `orca.storage`, so a worker reload does not lose it — a run interrupted by a restart
-  comes back paused.
+- `src/worker.ts` owns the run state machines, one per run. A stage starts (`agent.launch` for the
+  first one, `terminal.sendText` after that), and `agent.status.changed` for *that* terminal ends
+  it — so overlapping runs cannot advance each other. Runs live in `orca.storage`, so a worker
+  reload does not lose them; a run interrupted by a restart comes back paused. Stages carry their
+  own timeout (default 20 min) so a silent agent fails its stage instead of holding a slot.
 - `src/panel.tsx` is a components panel: it renders Orca's own controls and talks to the worker
   through `plugin.request` / `orca.panels.post`.
 - `src/protocol.ts` declares both directions once, so panel and worker are typed end to end.
+- `src/agent-choices.ts` maps each agent to the CLI Orca detects it by, so the picker offers only
+  what is installed; `src/agent-detect.ts` does the scan.
 
 ## Development
 

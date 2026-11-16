@@ -41,7 +41,8 @@ function agentIcon(id: string): IconName {
 }
 
 const pipelines = atom<Pipeline[]>([])
-const run = atom<Run | null>(null)
+const runs = atom<Run[]>([])
+const maxParallelRuns = atom(3)
 const workspaces = atom<Workspace[]>([])
 const selectedPipeline = atom('selectedPipeline', '', { persist: 'plugin' })
 const selectedWorkspace = atom('selectedWorkspace', '', { persist: 'plugin' })
@@ -82,8 +83,9 @@ async function attempt(work: () => Promise<void>): Promise<void> {
 async function refresh(): Promise<void> {
   const state = await plugin.request('run.state')
   set(pipelines, state.pipelines)
-  set(run, state.run)
+  set(runs, state.runs)
   set(defaultAgent, state.defaultAgent)
+  set(maxParallelRuns, state.maxParallelRuns)
   set(availableAgents, state.availableAgents ?? [])
   const listed = await plugin.request('workspaces.list')
   set(workspaces, listed.workspaces)
@@ -113,14 +115,17 @@ function startRun(): void {
       workspaceId: read(selectedWorkspace),
       task: read(task)
     })
-    set(run, answer.run)
+    set(runs, [answer.run, ...read(runs)])
   })
 }
 
-function control(name: 'run.stop' | 'run.resume' | 'run.retry' | 'run.skip'): void {
+function control(
+  name: 'run.stop' | 'run.resume' | 'run.retry' | 'run.skip' | 'run.remove',
+  runId: string
+): void {
   void attempt(async () => {
-    const answer = await plugin.request(name)
-    set(run, answer.run)
+    const answer = await plugin.request(name, { runId })
+    set(runs, answer.runs)
   })
 }
 
@@ -191,17 +196,16 @@ function removePipeline(): void {
 
 /** Runs once before the first render; `ctx.subscriptions` end with the panel. */
 export function setup(ctx: PanelContext): void {
-  ctx.subscriptions.push(plugin.on('run.changed', (payload) => set(run, payload.run)))
+  ctx.subscriptions.push(plugin.on('runs.changed', (payload) => set(runs, payload.runs)))
   ctx.subscriptions.push(
     plugin.on('pipelines.changed', (payload) => set(pipelines, payload.pipelines))
   )
   void attempt(refresh)
 }
 
-function stageRows(current: Run | null): TableRow[] {
-  if (!current) return []
-  const declaredStages = read(pipelines).find((entry) => entry.id === current.pipelineId)?.stages
-  return current.stages.map((stage, index) => {
+function stageRows(run: Run): TableRow[] {
+  const declaredStages = read(pipelines).find((entry) => entry.id === run.pipelineId)?.stages
+  return run.stages.map((stage, index) => {
     const declared = declaredStages?.find((item) => item.id === stage.stageId)
     const elapsed =
       stage.startedAt === null
@@ -220,32 +224,101 @@ function stageRows(current: Run | null): TableRow[] {
   })
 }
 
-function Progress({ current }: { current: Run | null }) {
-  if (!current) return null
-  const done = current.stages.filter((stage) => stage.status === 'done').length
+/** One run: its own stage table, its own controls, its own agent terminal behind them. */
+function RunCard({ run }: { run: Run }) {
+  const stage = run.stages[run.stageIndex]
+  const done = run.stages.filter((item) => item.status === 'done').length
+  const running = run.status === 'running'
+  const blocked = run.status === 'blocked'
+  const tail = [...run.stages].reverse().find((item) => item.tail)?.tail ?? null
   return (
-    <Badge tone={current.status === 'failed' ? 'danger' : 'accent'}>
-      {`${done}/${current.stages.length} · ${current.status}`}
-    </Badge>
+    <Collapsible
+      title={run.pipelineName}
+      description={`${run.workspaceName} · ${done}/${run.stages.length} stages · ${run.status}`}
+      defaultOpen={running || blocked}
+    >
+      <Stack gap="sm">
+        {blocked ? (
+          <Callout tone="warning" title="Needs you">
+            <Text size="sm">{stage?.note ?? 'The agent is waiting for you in its terminal.'}</Text>
+          </Callout>
+        ) : null}
+        {run.status === 'failed' ? (
+          <Callout tone="danger" title="Stage failed">
+            <Text size="sm">{stage?.note ?? 'The agent reported a failed turn.'}</Text>
+          </Callout>
+        ) : null}
+        <Table
+          label={`Stages of ${run.pipelineName} in ${run.workspaceName}`}
+          columns={[
+            { key: 'stage', label: 'Stage', minWidth: 'sm' },
+            { key: 'state', label: 'State', width: 'sm' },
+            { key: 'elapsed', label: 'Took', width: 'xs', hideBelow: 'sm' }
+          ]}
+          rows={stageRows(run)}
+        />
+        <Row gap="xs" wrap>
+          {running ? (
+            <Button variant="outline" icon="stop" onPress={() => control('run.stop', run.id)}>
+              Stop
+            </Button>
+          ) : null}
+          {blocked ? (
+            <Button icon="next" onPress={() => control('run.resume', run.id)}>
+              Carry on
+            </Button>
+          ) : null}
+          {!running ? (
+            <Button variant="ghost" icon="refresh" onPress={() => control('run.retry', run.id)}>
+              Retry stage
+            </Button>
+          ) : null}
+          {!running && run.status !== 'done' ? (
+            <Button variant="ghost" icon="next" onPress={() => control('run.skip', run.id)}>
+              Skip stage
+            </Button>
+          ) : null}
+          {!running && !blocked ? (
+            <Button
+              variant="ghost"
+              tone="danger"
+              icon="delete"
+              onPress={() => control('run.remove', run.id)}
+            >
+              Remove
+            </Button>
+          ) : null}
+        </Row>
+        {tail ? (
+          <Collapsible title="Last terminal output">
+            <CodeView code={tail} maxHeight="sm" wrap />
+          </Collapsible>
+        ) : null}
+        <Text size="xs" muted>
+          {`Started ${new Date(run.startedAt).toLocaleTimeString()} with ${run.agent}`}
+        </Text>
+      </Stack>
+    </Collapsible>
   )
 }
 
 function RunTab() {
-  const current = read(run)
   const list = read(pipelines)
   const spaces = read(workspaces)
+  const all = read(runs)
   const pipelineId = read(selectedPipeline)
   const workspaceId = read(selectedWorkspace)
-  const blocked = current?.status === 'blocked'
-  const running = current?.status === 'running'
-  const stage = current ? current.stages[current.stageIndex] : null
-  const tail = current?.stages.find((item) => item.tail)?.tail ?? null
+  const limit = read(maxParallelRuns)
+  const active = all.filter((run) => run.status === 'running' || run.status === 'blocked').length
+  const full = active >= limit
 
   return (
     <Stack gap="md">
       <Row justify="between" align="center">
         <Heading>Pipeline</Heading>
-        <Progress current={current} />
+        <Badge tone={active > 0 ? 'accent' : 'neutral'}>
+          {active > 0 ? `${active} of ${limit} running` : 'idle'}
+        </Badge>
       </Row>
 
       {spaces.length === 0 ? (
@@ -260,7 +333,6 @@ function RunTab() {
             value: space.id,
             label: space.branch ? `${space.name} · ${space.branch}` : space.name
           }))}
-          disabled={running}
           onChange={(value) => set(selectedWorkspace, value)}
         />
       )}
@@ -269,7 +341,6 @@ function RunTab() {
         label="Pipeline"
         value={pipelineId}
         options={list.map((entry) => ({ value: entry.id, label: entry.name }))}
-        disabled={running}
         onChange={(value) => set(selectedPipeline, value)}
       />
 
@@ -278,79 +349,37 @@ function RunTab() {
         rows={3}
         placeholder="What should the pipeline build, fix or review?"
         value={read(task)}
-        disabled={running}
         onChange={(value) => set(task, value)}
       />
 
-      <Row gap="xs" wrap>
+      <Row gap="xs" wrap align="center">
         <Button
           icon="play"
           onPress={startRun}
-          disabled={read(busy) || running || !pipelineId || !workspaceId}
+          disabled={read(busy) || full || !pipelineId || !workspaceId}
         >
           Run
         </Button>
-        <Button variant="outline" icon="stop" onPress={() => control('run.stop')} disabled={!running}>
-          Stop
-        </Button>
-        {blocked ? (
-          <Button icon="next" onPress={() => control('run.resume')}>
-            Carry on
-          </Button>
-        ) : null}
-        {current && !running ? (
-          <Button variant="ghost" icon="refresh" onPress={() => control('run.retry')}>
-            Retry stage
-          </Button>
-        ) : null}
-        {current && !running && current.status !== 'done' ? (
-          <Button variant="ghost" icon="next" onPress={() => control('run.skip')}>
-            Skip stage
-          </Button>
+        {full ? (
+          <Text size="xs" muted>
+            {`${limit} at a time is the limit; stop one to start another, or raise it in Settings.`}
+          </Text>
         ) : null}
       </Row>
 
-      {blocked ? (
-        <Callout tone="warning" title="Needs you">
-          <Text size="sm">{stage?.note ?? 'The agent is waiting for you in its terminal.'}</Text>
-        </Callout>
-      ) : null}
-
-      {current?.status === 'failed' ? (
-        <Callout tone="danger" title="Stage failed">
-          <Text size="sm">{stage?.note ?? 'The agent reported a failed turn.'}</Text>
-        </Callout>
-      ) : null}
-
-      {current ? (
-        <Table
-          label="Stages"
-          columns={[
-            { key: 'stage', label: 'Stage', minWidth: 'sm' },
-            { key: 'state', label: 'State', width: 'sm' },
-            { key: 'elapsed', label: 'Took', width: 'xs', hideBelow: 'sm' }
-          ]}
-          rows={stageRows(current)}
-        />
-      ) : (
+      {all.length === 0 ? (
         <EmptyState
           title="No run yet"
-          description="Pick a pipeline and a workspace, describe the task, then press Run."
+          description="Pick a pipeline and a workspace, describe the task, then press Run. Runs overlap, each with its own agent."
           icon="layers"
         />
+      ) : (
+        <Stack gap="sm">
+          {all.map((entry) => (
+            <RunCard key={entry.id} run={entry} />
+          ))}
+        </Stack>
       )}
-
-      {current && stage ? (
-        <Text size="xs" muted>
-          {`Stage ${current.stageIndex + 1} of ${current.stages.length} in ${current.workspaceName} with ${current.agent}`}
-        </Text>
-      ) : null}
-
-      {tail ? (
-        <Collapsible title="Last terminal output" description="The end of the agent's terminal">
-          <CodeView code={tail} maxHeight="md" wrap />
-        </Collapsible>
-      ) : null}
     </Stack>
   )
 }

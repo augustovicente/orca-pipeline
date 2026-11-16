@@ -1,5 +1,5 @@
-// Runs the worker the way Orca does: start a run, let the agent finish each stage, and check
-// the next prompt reached the same terminal.
+// Runs the worker the way Orca does: start runs, let each agent finish its stage, and check every
+// prompt reached the right terminal.
 import { assert, mockHost, mountWorker, test } from 'orca/testing'
 import * as main from './worker'
 
@@ -13,103 +13,165 @@ const workspace = {
   hostId: null
 }
 
-function hostFor(prompts: string[]) {
-  return mockHost({
+type Sent = { terminalId: string; text: string }
+
+function hostOptions(sent: Sent[]) {
+  let launches = 0
+  return {
     results: {
       'workspace.list': { workspaces: [workspace], truncated: false },
       'agent.launch': ({ prompt }: { prompt?: string }) => {
-        prompts.push(prompt ?? '')
-        return { terminalId: 'terminal-1' }
+        launches += 1
+        const terminalId = `terminal-${launches}`
+        sent.push({ terminalId, text: prompt ?? '' })
+        return { terminalId }
       },
-      'terminal.sendText': ({ text }: { text: string }) => {
-        prompts.push(text)
+      'terminal.sendText': ({ terminalId, text }: { terminalId: string; text: string }) => {
+        sent.push({ terminalId, text })
         return { accepted: true }
       },
       'terminal.read': { lines: ['all good'], truncated: false }
     }
-  })
+  }
 }
 
-const idle = {
-  paneKey: 'tab:pane',
-  terminalId: 'terminal-1',
-  workspaceId: 'workspace-1'
+function hostFor(sent: Sent[]) {
+  return mockHost(hostOptions(sent))
+}
+
+function idle(terminalId: string, state: 'working' | 'waiting' | 'blocked' | 'done') {
+  return { paneKey: 'tab:pane', terminalId, workspaceId: 'workspace-1', state, receivedAt: 1 }
 }
 
 test('chains every stage in one agent session', async () => {
-  const prompts: string[] = []
-  const host = hostFor(prompts)
-  const worker = await mountWorker(main, { host })
+  const sent: Sent[] = []
+  const worker = await mountWorker(main, { host: hostFor(sent) })
 
-  const { run } = await worker.request('run.start', {
+  const started = await worker.request('run.start', {
     pipelineId: 'feature',
     workspaceId: 'workspace-1',
     task: 'Add a search endpoint'
   })
-  assert.equal(run.status, 'running')
-  assert.equal(prompts.length, 1)
-  assert.match(prompts[0] ?? '', /Add a search endpoint/)
+  assert.equal(started.run.status, 'running')
+  assert.equal(sent.length, 1)
+  assert.match(sent[0]?.text ?? '', /Add a search endpoint/)
 
-  // Four stages, each ending its turn: working, then waiting.
   for (let stage = 0; stage < 4; stage += 1) {
-    await worker.emit('agent.status.changed', { ...idle, state: 'working', receivedAt: 1 })
-    await worker.emit('agent.status.changed', { ...idle, state: 'waiting', receivedAt: 2 })
+    await worker.emit('agent.status.changed', idle('terminal-1', 'working'))
+    await worker.emit('agent.status.changed', idle('terminal-1', 'waiting'))
   }
 
   const final = await worker.request('run.state')
-  assert.equal(final.run?.status, 'done')
-  assert.equal(final.run?.terminalId, 'terminal-1')
-  assert.equal(prompts.length, 4)
+  const run = final.runs[0]
+  assert.equal(run?.status, 'done')
+  assert.equal(run?.terminalId, 'terminal-1')
   assert.deepEqual(
-    final.run?.stages.map((stage) => stage.status),
+    run?.stages.map((stage) => stage.status),
     ['done', 'done', 'done', 'done']
   )
-  assert.equal(host.callsOf('agent.launch').length, 1)
-  assert.equal(host.callsOf('terminal.sendText').length, 3)
-  assert.equal(host.callsOf('notifications.show').length, 1)
+  assert.equal(sent.length, 4)
   assert.deepEqual(worker.refusals, [])
   await worker.deactivate()
 })
 
-test('stops when the agent is blocked and carries on when resumed', async () => {
-  const prompts: string[] = []
-  const worker = await mountWorker(main, { host: hostFor(prompts) })
+test('runs two pipelines at once, each on its own terminal', async () => {
+  const sent: Sent[] = []
+  const worker = await mountWorker(main, { host: hostFor(sent) })
 
-  await worker.request('run.start', {
+  const feature = await worker.request('run.start', {
+    pipelineId: 'feature',
+    workspaceId: 'workspace-1',
+    task: 'Add search'
+  })
+  const bugfix = await worker.request('run.start', {
     pipelineId: 'bugfix',
     workspaceId: 'workspace-1',
     task: 'Crash on empty input'
   })
+  assert.notEqual(feature.run.id, bugfix.run.id)
 
-  await worker.emit('agent.status.changed', { ...idle, state: 'blocked', receivedAt: 3 })
+  // Finishing a stage of the feature run must not move the bug fix run.
+  await worker.emit('agent.status.changed', idle('terminal-1', 'working'))
+  await worker.emit('agent.status.changed', idle('terminal-1', 'waiting'))
+
   let state = await worker.request('run.state')
-  assert.equal(state.run?.status, 'blocked')
-  assert.equal(prompts.length, 1)
+  assert.equal(state.runs.length, 2)
+  assert.equal(state.runs.find((run) => run.pipelineId === 'feature')?.stageIndex, 1)
+  assert.equal(state.runs.find((run) => run.pipelineId === 'bugfix')?.stageIndex, 0)
 
-  await worker.request('run.resume')
-  state = await worker.request('run.state')
-  assert.equal(state.run?.status, 'running')
+  // Its prompt went to the feature terminal, not the bug fix one.
+  const stageTwo = sent.filter((entry) => entry.text.includes('Implement the plan'))
+  assert.deepEqual(
+    stageTwo.map((entry) => entry.terminalId),
+    ['terminal-1']
+  )
 
-  await worker.emit('agent.status.changed', { ...idle, state: 'working', receivedAt: 4 })
-  await worker.emit('agent.status.changed', { ...idle, state: 'done', receivedAt: 5 })
+  // Both keep going independently.
+  await worker.emit('agent.status.changed', idle('terminal-2', 'working'))
+  await worker.emit('agent.status.changed', idle('terminal-2', 'waiting'))
   state = await worker.request('run.state')
-  assert.equal(state.run?.stageIndex, 1)
-  assert.equal(prompts.length, 2)
+  assert.equal(state.runs.find((run) => run.pipelineId === 'bugfix')?.stageIndex, 1)
+  assert.equal(state.runs.find((run) => run.pipelineId === 'feature')?.stageIndex, 1)
+
   assert.deepEqual(worker.refusals, [])
   await worker.deactivate()
 })
 
-test('rejects a second run while one is going', async () => {
-  const worker = await mountWorker(main, { host: hostFor([]) })
-  await worker.request('run.start', {
+test('the parallel limit is a setting, and the refusal names it', async () => {
+  const sent: Sent[] = []
+  const host = hostFor(sent)
+  const worker = await mountWorker(main, { host })
+
+  for (const task of ['one', 'two', 'three']) {
+    await worker.request('run.start', { pipelineId: 'feature', workspaceId: 'workspace-1', task })
+  }
+  await assert.rejects(
+    worker.request('run.start', { pipelineId: 'feature', workspaceId: 'workspace-1', task: 'four' }),
+    /3 runs at a time is the limit/
+  )
+
+  // The limit itself is a setting.
+  const worker2 = await mountWorker(main, {
+    host: mockHost({ ...hostOptions([]), settings: { maxParallelRuns: 1 } })
+  })
+  await worker2.request('run.start', {
     pipelineId: 'feature',
     workspaceId: 'workspace-1',
     task: 'one'
   })
   await assert.rejects(
-    worker.request('run.start', { pipelineId: 'feature', workspaceId: 'workspace-1', task: 'two' }),
-    /already going/
+    worker2.request('run.start', { pipelineId: 'feature', workspaceId: 'workspace-1', task: 'two' }),
+    /1 run at a time is the limit/
   )
+  await worker2.deactivate()
+  await worker.deactivate()
+})
+
+test('stops one run when its agent is blocked, and carries it on alone', async () => {
+  const sent: Sent[] = []
+  const worker = await mountWorker(main, { host: hostFor(sent) })
+
+  const { run } = await worker.request('run.start', {
+    pipelineId: 'bugfix',
+    workspaceId: 'workspace-1',
+    task: 'Crash on empty input'
+  })
+
+  await worker.emit('agent.status.changed', idle('terminal-1', 'blocked'))
+  let state = await worker.request('run.state')
+  assert.equal(state.runs[0]?.status, 'blocked')
+  assert.equal(sent.length, 1)
+
+  await worker.request('run.resume', { runId: run.id })
+  state = await worker.request('run.state')
+  assert.equal(state.runs[0]?.status, 'running')
+
+  await worker.emit('agent.status.changed', idle('terminal-1', 'working'))
+  await worker.emit('agent.status.changed', idle('terminal-1', 'done'))
+  state = await worker.request('run.state')
+  assert.equal(state.runs[0]?.stageIndex, 1)
+  assert.equal(sent.length, 2)
+  assert.deepEqual(worker.refusals, [])
   await worker.deactivate()
 })
 
@@ -150,18 +212,47 @@ test('adds a new seeded pipeline to storage that predates it, once', async () =>
   await worker.deactivate()
 })
 
+test('adopts a single-run install, and finishes a run it finds running', async () => {
+  const host = mockHost({
+    storage: {
+      run: {
+        id: 'run-legacy',
+        pipelineId: 'bugfix',
+        pipelineName: 'Bug fix',
+        workspaceId: 'workspace-1',
+        workspaceName: 'demo',
+        agent: 'claude',
+        task: 'old',
+        terminalId: 'terminal-9',
+        stageIndex: 1,
+        status: 'running',
+        stages: [
+          { stageId: 'reproduce', status: 'done', startedAt: 1, endedAt: 2, note: null, tail: null },
+          { stageId: 'fix', status: 'running', startedAt: 3, endedAt: null, note: null, tail: null },
+          { stageId: 'prove', status: 'pending', startedAt: null, endedAt: null, note: null, tail: null }
+        ],
+        startedAt: 1,
+        endedAt: null
+      }
+    }
+  })
+  const worker = await mountWorker(main, { host })
+  const state = await worker.request('run.state')
+  assert.equal(state.runs.length, 1)
+  assert.equal(state.runs[0]?.id, 'run-legacy')
+  // The process that waited on that agent is gone, so it is paused, not silently running.
+  assert.equal(state.runs[0]?.status, 'blocked')
+  assert.match(state.runs[0]?.stages[1]?.note ?? '', /restarted/)
+  assert.deepEqual(worker.refusals, [])
+  await worker.deactivate()
+})
+
 test('new pipelines and the seeds use the agent running in the focused workspace', async () => {
   const host = mockHost({
     results: {
       'agents.list': {
         agents: [
-          {
-            terminalId: 't1',
-            title: 'Codex',
-            agent: 'codex',
-            state: 'working',
-            stateStartedAt: 0
-          }
+          { terminalId: 't1', title: 'Codex', agent: 'codex', state: 'working', stateStartedAt: 0 }
         ]
       }
     }
@@ -198,7 +289,6 @@ test('the default agent setting wins, and adopted seeds stay edited', async () =
   const adopted = await worker.request('pipelines.list')
   assert.equal(adopted.pipelines.find((p) => p.id === 'feature')?.agent, 'gemini')
 
-  // A later change to a pipeline's agent is not undone by the one-shot adoption.
   await worker.request('pipelines.save', {
     pipeline: {
       id: 'feature',

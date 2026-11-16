@@ -3,7 +3,7 @@
   "manifestVersion": 2,
   "id": "pipeline",
   "name": "Pipeline",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Staged workflows for your agents: plan, build, test and review chained in one agent session.",
   "license": "MIT",
   "engines": {
@@ -57,6 +57,15 @@
         "title": "Default agent",
         "description": "Agent for new pipelines and the seeded ones. Leave empty to use the agent running in your focused workspace, then claude.",
         "type": "string"
+      },
+      {
+        "key": "maxParallelRuns",
+        "title": "Runs at a time",
+        "description": "How many pipelines may run at once; each one launches its own agent. 1 makes runs strictly sequential.",
+        "type": "integer",
+        "default": 3,
+        "minimum": 1,
+        "maximum": 8
       }
     ]
   },

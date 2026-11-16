@@ -48,7 +48,13 @@ function hostWith(requests: Record<string, unknown>) {
       'workspace.readContext': { branch: 'main', displayName: 'demo', terminals: [] }
     },
     requests: {
-      'run.state': { run: null, pipelines: [pipeline], defaultAgent: 'claude', availableAgents: ['claude', 'codex', 'opencode'] },
+      'run.state': {
+        runs: [],
+        pipelines: [pipeline],
+        defaultAgent: 'claude',
+        availableAgents: ['claude', 'codex', 'opencode'],
+        maxParallelRuns: 3
+      },
       'workspaces.list': { workspaces: [workspace] },
       ...requests
     }
@@ -72,7 +78,7 @@ test('starts the selected pipeline with the typed task', async () => {
   await view.press({ role: 'button', text: 'Run' })
 
   assert.deepEqual(started, [{ pipelineId: 'feature', workspaceId: 'workspace-1', task: 'Ship it' }])
-  assert.ok(view.find({ text: /running/ }))
+  assert.ok(view.find({ text: /1 of 3 running/ }))
   assert.deepEqual(view.errors, [])
   assert.deepEqual(view.refusals, [])
   await view.unmount()
@@ -82,16 +88,16 @@ test('follows a run the worker posts', async () => {
   const view = await mount(panel, { host: hostWith({}) })
   await view.settled()
 
-  await view.post('run.changed', { run })
+  await view.post('runs.changed', { runs: [run] })
   assert.ok(view.find({ type: 'Table' }))
   assert.deepEqual(view.rowsOf({ type: 'Table' }), ['plan', 'build'])
 
-  await view.post('run.changed', {
-    run: {
+  await view.post('runs.changed', {
+    runs: [{
       ...run,
       status: 'blocked',
       stages: [{ ...run.stages[0]!, status: 'blocked', note: 'Waiting for you' }, run.stages[1]!]
-    }
+    }]
   })
   assert.ok(view.find({ text: /Waiting for you/ }))
   assert.deepEqual(view.errors, [])
@@ -125,6 +131,43 @@ test('picks an agent from the list, with icons, including opencode', async () =>
 
   await view.press({ role: 'button', text: 'Save' })
   assert.equal(saved[0]?.pipeline.agent, 'opencode')
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('shows each parallel run with its own stage table', async () => {
+  const view = await mount(panel, { host: hostWith({}) })
+  await view.settled()
+
+  await view.post('runs.changed', {
+    runs: [run, { ...run, id: 'run-2', pipelineId: 'bugfix', pipelineName: 'Bug fix' }]
+  })
+  assert.equal(view.findAll({ type: 'Table' }).length, 2)
+  assert.ok(view.find({ text: /2 of 3 running/ }))
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('refuses to start past the parallel limit', async () => {
+  const view = await mount(panel, {
+    host: hostWith({
+      'run.state': {
+        runs: [
+          { ...run, id: 'run-1' },
+          { ...run, id: 'run-2' },
+          { ...run, id: 'run-3' }
+        ],
+        pipelines: [pipeline],
+        defaultAgent: 'claude',
+        availableAgents: ['claude'],
+        maxParallelRuns: 3
+      }
+    })
+  })
+  await view.settled()
+
+  assert.equal(view.find({ role: 'button', text: 'Run' })?.disabled, true)
+  assert.ok(view.find({ text: /stop one to start another/ }))
   assert.deepEqual(view.errors, [])
   await view.unmount()
 })
