@@ -305,6 +305,40 @@ test('the default agent setting wins, and adopted seeds stay edited', async () =
   await again.deactivate()
 })
 
+test('pauses, rather than fails, when Orca refuses input outside the active worktree', async () => {
+  const sent: Sent[] = []
+  const host = hostFor(sent)
+  const worker = await mountWorker(main, { host })
+  const { run } = await worker.request('run.start', {
+    pipelineId: 'bugfix',
+    workspaceId: 'workspace-1',
+    task: 'Crash on empty input'
+  })
+
+  // Orca only types into the worktree the app has active; stage two is refused.
+  host.respond('terminal.sendText', () => {
+    throw new Error('terminal is outside the active worktree')
+  })
+  await worker.emit('agent.status.changed', idle('terminal-1', 'working'))
+  await worker.emit('agent.status.changed', idle('terminal-1', 'waiting'))
+
+  let state = await worker.request('run.state')
+  assert.equal(state.runs[0]?.status, 'blocked')
+  assert.match(state.runs[0]?.stages[1]?.note ?? state.runs[0]?.stages[0]?.note ?? '', /Open demo in Orca/)
+
+  // Once the worktree is active, carrying on re-sends instead of waiting for a turn that never came.
+  host.respond('terminal.sendText', ({ text }: { text: string }) => {
+    sent.push({ terminalId: 'terminal-1', text })
+    return { accepted: true }
+  })
+  await worker.request('run.resume', { runId: run.id })
+  state = await worker.request('run.state')
+  assert.equal(state.runs[0]?.status, 'running')
+  assert.equal(sent.length, 2)
+  assert.deepEqual(worker.refusals, [])
+  await worker.deactivate()
+})
+
 test('saves and removes a pipeline', async () => {
   const host = hostFor([])
   const worker = await mountWorker(main, { host })

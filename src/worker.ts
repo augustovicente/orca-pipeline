@@ -44,9 +44,44 @@ const timers = new Map<string, ReturnType<typeof setTimeout>>()
 const startups = new Map<string, ReturnType<typeof setTimeout>>()
 /** Whether each run's current stage has reported `working`; a stage cannot be done before it starts. */
 const sawWorking = new Map<string, boolean>()
+/** Runs paused because their worktree was not active: carrying on must re-send, not just wait. */
+const scopeBlocked = new Set<string>()
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/** Orca refuses terminal input outside the worktree the app has active; that is a "do this" not a failure. */
+function isScopeError(error: unknown): boolean {
+  const text = message(error).toLowerCase()
+  return text.includes('outside the active worktree') || text.includes('no active worktree')
+}
+
+function scopeNote(run: Run): string {
+  return `Open ${run.workspaceName} in Orca so the pipeline may type into its agent, then press Carry on.`
+}
+
+/** The workspace the app has focused, when it can be told apart from the others. */
+async function activeWorkspace(orca: OrcaWorkerApi): Promise<Workspace | null> {
+  try {
+    const context = await orca.host.call('workspace.readContext')
+    if (!context) return null
+    const listed = await orca.host.call('workspace.list')
+    const entries = listed?.workspaces ?? []
+    const match = entries.filter((entry) => entry.name === context.displayName)
+    return match.length === 1
+      ? {
+          id: match[0]!.id,
+          name: match[0]!.name,
+          path: match[0]!.path,
+          branch: match[0]!.branch,
+          kind: match[0]!.kind,
+          project: match[0]!.project ?? null
+        }
+      : null
+  } catch {
+    return null
+  }
 }
 
 /** Copies through JSON so a panel never shares a mutable object with the worker. */
@@ -161,6 +196,11 @@ async function rescue(
       }
       last = 'the terminal refused the input'
     } catch (error) {
+      if (isScopeError(error)) {
+        scopeBlocked.add(run.id)
+        await block(orca, run, scopeNote(run))
+        return
+      }
       last = message(error)
     }
     orca.log(`run.output: retrying the prompt for ${run.id} (${last})`)
@@ -262,6 +302,7 @@ async function startStage(orca: OrcaWorkerApi, run: Run, index: number): Promise
   stage.note = null
   stage.tail = null
   sawWorking.set(run.id, false)
+  scopeBlocked.delete(run.id)
   await persist(orca)
   armTimer(orca, run, index)
 
@@ -292,6 +333,11 @@ async function startStage(orca: OrcaWorkerApi, run: Run, index: number): Promise
       armStartup(orca, run, index, false)
     }
   } catch (error) {
+    if (isScopeError(error)) {
+      scopeBlocked.add(run.id)
+      await block(orca, run, scopeNote(run))
+      return
+    }
     await fail(orca, run, index, message(error))
   }
 }
@@ -594,6 +640,15 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
       // The name is cosmetic; the id is what the host needs.
     }
 
+    // Orca lets a plugin type only into the active worktree, so a run elsewhere would stall at
+    // stage two. Say so now, while it is one click to fix.
+    const active = await activeWorkspace(orca)
+    if (active && active.id !== workspaceId) {
+      throw new Error(
+        `Open ${workspaceName} in Orca first: a pipeline can only type into the worktree that is active, and ${active.name} is active now.`
+      )
+    }
+
     const run: Run = {
       id: `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       pipelineId: pipeline.id,
@@ -647,9 +702,15 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
       stage.status = 'running'
       stage.note = null
     }
+    const resend = scopeBlocked.delete(run.id)
     run.status = 'running'
     sawWorking.set(run.id, false)
     await persist(orca)
+    if (resend) {
+      // The prompt never landed; carrying on means sending it again with the worktree now active.
+      await startStage(orca, run, run.stageIndex)
+      return { runs: plain(runs) }
+    }
     armTimer(orca, run, run.stageIndex)
     // If this run never showed signs of life, hold the terminal to the same two-minute standard.
     if (!sawWorking.get(run.id)) armStartup(orca, run, run.stageIndex, false)

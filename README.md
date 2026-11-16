@@ -91,6 +91,18 @@ New pipelines, and the seeded ones, start with **your** agent rather than a hard
 `defaultAgent` setting when you set it, otherwise the agent running in your focused workspace, and
 claude only as a last resort.
 
+### One worktree at a time can receive prompts
+
+Orca lets a plugin type only into the terminal of the **worktree the app has active**: `terminal.sendText`
+resolves the active worktree on every call and refuses anything else (`terminal is outside the active
+worktree`). Reading output has no such rule.
+
+So a pipeline can start in any workspace, but only the active one can be driven. The plugin therefore
+refuses to start a run in a workspace Orca is not showing, and a run that loses the active worktree
+**pauses** with "Open <workspace> in Orca so the pipeline may type into its agent" — press *Carry on*
+once it is back in front, and the prompt is sent again. Parallel runs work because they share that
+worktree.
+
 ## Requirements
 
 - Orca `>= 1.4.248` (components panels, status bar items).
