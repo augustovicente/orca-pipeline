@@ -98,25 +98,61 @@ function clearStartup(runId: string): void {
 }
 
 /**
- * A launched agent that never reports `working` means the prompt never landed (Orca logs
- * `agent_launch_terminal_not_running_agent` when that happens). Fail the stage in minutes, not in
- * the twenty a stage timeout allows, and say what to check.
+ * A launched agent that never reports `working` usually means the launch prompt never landed:
+ * Orca logs `agent_launch_terminal_not_running_agent` when it cannot confirm the agent is ready,
+ * even though the TUI is up. So the first watchdog types the prompt into the terminal instead,
+ * and only a second silence fails the stage.
  */
-function armStartup(orca: OrcaWorkerApi, run: Run, index: number): void {
+function armStartup(
+  orca: OrcaWorkerApi,
+  run: Run,
+  index: number,
+  mayResend: boolean
+): void {
   clearStartup(run.id)
   const timer = setTimeout(() => {
     startups.delete(run.id)
     if (sawWorking.get(run.id)) return
-    void fail(
-      orca,
-      run,
-      index,
-      'The agent never started in its terminal (no working signal in 2 min). Check that its CLI runs here, then Retry stage.'
-    )
-  }, 120_000)
+    void rescue(orca, run, index, mayResend)
+  }, mayResend ? 45_000 : 60_000)
   const unrefable = timer as unknown as { unref?: () => void }
   unrefable.unref?.()
   startups.set(run.id, timer)
+}
+
+async function rescue(
+  orca: OrcaWorkerApi,
+  run: Run,
+  index: number,
+  mayResend: boolean
+): Promise<void> {
+  if (!mayResend || !run.terminalId) {
+    await fail(
+      orca,
+      run,
+      index,
+      'The agent never reported working (no signal in about two minutes). Check that its CLI runs here, then Retry stage.'
+    )
+    return
+  }
+  // The launch call could not hand the prompt over; type it in like any later stage.
+  try {
+    const stage = run.stages[index]
+    const declared = pipelineOf(run.pipelineId)?.stages.find((item) => item.id === stage?.stageId)
+    await orca.host.call('terminal.sendText', {
+      terminalId: run.terminalId,
+      text: promptFor(
+        declared ?? { id: stage?.stageId ?? 'stage', name: stage?.stageId ?? 'stage', prompt: '' },
+        index,
+        run.task
+      ),
+      enter: true
+    })
+  } catch {
+    await fail(orca, run, index, 'The prompt could not be delivered to the agent terminal.')
+    return
+  }
+  armStartup(orca, run, index, false)
 }
 
 function armTimer(orca: OrcaWorkerApi, run: Run, index: number): void {
@@ -126,7 +162,6 @@ function armTimer(orca: OrcaWorkerApi, run: Run, index: number): void {
     timers.delete(run.id)
     void fail(orca, run, index, `No completion signal after ${minutes} min.`)
   }, minutes * 60_000)
-  // Never hold the process open for a pending stage.
   const unrefable = timer as unknown as { unref?: () => void }
   unrefable.unref?.()
   timers.set(run.id, timer)
@@ -229,7 +264,7 @@ async function startStage(orca: OrcaWorkerApi, run: Run, index: number): Promise
         prompt
       })
       run.terminalId = launched.terminalId
-      armStartup(orca, run, index)
+      armStartup(orca, run, index, true)
       await persist(orca)
     } else {
       const sent = await orca.host.call('terminal.sendText', {
@@ -239,7 +274,7 @@ async function startStage(orca: OrcaWorkerApi, run: Run, index: number): Promise
       })
       if (!sent.accepted) throw new Error('The terminal did not accept the prompt.')
       // A prompt sent to a terminal whose agent is gone also never reports `working`.
-      armStartup(orca, run, index)
+      armStartup(orca, run, index, false)
     }
   } catch (error) {
     await fail(orca, run, index, message(error))
@@ -602,7 +637,7 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
     await persist(orca)
     armTimer(orca, run, run.stageIndex)
     // If this run never showed signs of life, hold the terminal to the same two-minute standard.
-    if (!sawWorking.get(run.id)) armStartup(orca, run, run.stageIndex)
+    if (!sawWorking.get(run.id)) armStartup(orca, run, run.stageIndex, false)
     return { runs: plain(runs) }
   })
 
