@@ -40,6 +40,8 @@ let pipelines: Pipeline[] = []
 let runs: Run[] = []
 /** Stage timeouts, by run id. */
 const timers = new Map<string, ReturnType<typeof setTimeout>>()
+/** "The agent never came up" watchdogs, by run id; cleared by the first `working`. */
+const startups = new Map<string, ReturnType<typeof setTimeout>>()
 /** Whether each run's current stage has reported `working`; a stage cannot be done before it starts. */
 const sawWorking = new Map<string, boolean>()
 
@@ -77,9 +79,44 @@ function promptFor(stage: Stage, index: number, task: string): string {
 
 function clearTimer(runId: string): void {
   const timer = timers.get(runId)
-  if (timer === undefined) return
-  clearTimeout(timer)
-  timers.delete(runId)
+  if (timer !== undefined) {
+    clearTimeout(timer)
+    timers.delete(runId)
+  }
+  const startup = startups.get(runId)
+  if (startup !== undefined) {
+    clearTimeout(startup)
+    startups.delete(runId)
+  }
+}
+
+function clearStartup(runId: string): void {
+  const startup = startups.get(runId)
+  if (startup === undefined) return
+  clearTimeout(startup)
+  startups.delete(runId)
+}
+
+/**
+ * A launched agent that never reports `working` means the prompt never landed (Orca logs
+ * `agent_launch_terminal_not_running_agent` when that happens). Fail the stage in minutes, not in
+ * the twenty a stage timeout allows, and say what to check.
+ */
+function armStartup(orca: OrcaWorkerApi, run: Run, index: number): void {
+  clearStartup(run.id)
+  const timer = setTimeout(() => {
+    startups.delete(run.id)
+    if (sawWorking.get(run.id)) return
+    void fail(
+      orca,
+      run,
+      index,
+      'The agent never started in its terminal (no working signal in 2 min). Check that its CLI runs here, then Retry stage.'
+    )
+  }, 120_000)
+  const unrefable = timer as unknown as { unref?: () => void }
+  unrefable.unref?.()
+  startups.set(run.id, timer)
 }
 
 function armTimer(orca: OrcaWorkerApi, run: Run, index: number): void {
@@ -192,6 +229,7 @@ async function startStage(orca: OrcaWorkerApi, run: Run, index: number): Promise
         prompt
       })
       run.terminalId = launched.terminalId
+      armStartup(orca, run, index)
       await persist(orca)
     } else {
       const sent = await orca.host.call('terminal.sendText', {
@@ -279,6 +317,7 @@ async function onAgentStatus(
 
   if (event.state === 'working') {
     sawWorking.set(run.id, true)
+    clearStartup(run.id)
     return
   }
   if (event.state === 'blocked') {
@@ -593,6 +632,24 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
     return { runs: plain(runs) }
   })
 
+  orca.panels.handle('run.output', async ({ runId, maxLines }) => {
+    const run = runById(runId)
+    if (!run) throw missing()
+    if (!run.terminalId) return { text: null }
+    try {
+      const read = await orca.host.call('terminal.read', {
+        terminalId: run.terminalId,
+        maxLines: Math.min(2000, Math.max(20, maxLines ?? 400))
+      })
+      const text = read.lines.join('\n').trim()
+      return { text: text ? text.slice(-20000) : null }
+    } catch {
+      // The terminal is gone (closed, or the worktree slept): fall back to what the last stage kept.
+      const tail = [...run.stages].reverse().find((stage) => stage.tail)?.tail ?? null
+      return { text: tail }
+    }
+  })
+
   orca.panels.handle('run.remove', async ({ runId }) => {
     const run = runById(runId)
     if (!run) throw missing()
@@ -608,4 +665,6 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
 export function deactivate(): void {
   for (const timer of timers.values()) clearTimeout(timer)
   timers.clear()
+  for (const timer of startups.values()) clearTimeout(timer)
+  startups.clear()
 }

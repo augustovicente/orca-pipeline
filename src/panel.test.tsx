@@ -89,8 +89,9 @@ test('follows a run the worker posts', async () => {
   await view.settled()
 
   await view.post('runs.changed', { runs: [run] })
-  assert.ok(view.find({ type: 'Table' }))
-  assert.deepEqual(view.rowsOf({ type: 'Table' }), ['plan', 'build'])
+  // Stages are links into the agent's terminal, one row each.
+  assert.ok(view.find({ label: '1. Plan' }))
+  assert.ok(view.find({ label: '2. Build' }))
 
   await view.post('runs.changed', {
     runs: [{
@@ -142,7 +143,9 @@ test('shows each parallel run with its own stage table', async () => {
   await view.post('runs.changed', {
     runs: [run, { ...run, id: 'run-2', pipelineId: 'bugfix', pipelineName: 'Bug fix' }]
   })
-  assert.equal(view.findAll({ type: 'Table' }).length, 2)
+  assert.equal(view.findAll({ type: 'List' }).length, 2)
+  // Two runs, each with its own stage list.
+  assert.equal(view.findAll({ label: /^1\. / }).length, 2)
   assert.ok(view.find({ text: /2 of 3 running/ }))
   assert.deepEqual(view.errors, [])
   await view.unmount()
@@ -169,6 +172,28 @@ test('refuses to start past the parallel limit', async () => {
   assert.equal(view.find({ role: 'button', text: 'Run' })?.disabled, true)
   assert.ok(view.find({ text: /stop one to start another/ }))
   assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('lists a started run once, and opens its terminal from a stage', async () => {
+  const view = await mount(panel, {
+    host: hostWith({
+      'run.start': { run },
+      'run.output': { text: '> building…\nall good' }
+    })
+  })
+  await view.settled()
+  await view.type({ label: 'Task' }, 'Ship it')
+
+  // The worker also posts the run it just started; the list must still hold it once.
+  await view.press({ role: 'button', text: 'Run' })
+  await view.press({ role: 'button', text: 'Run' })
+  assert.equal(view.findAll({ label: /^1\. / }).length, 1)
+
+  await view.press({ label: '2. Build' })
+  assert.ok(view.find({ text: /all good/ }))
+  assert.deepEqual(view.errors, [])
+  assert.deepEqual(view.refusals, [])
   await view.unmount()
 })
 

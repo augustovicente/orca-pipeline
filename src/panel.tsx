@@ -24,16 +24,14 @@ import {
   Stack,
   Tab,
   Tabs,
-  Table,
   Text,
   Textarea,
   type PanelContext,
   type IconName,
-  type TableRow,
   type Tone
 } from 'orca'
 import { AGENT_CHOICES } from './agent-choices'
-import type { Pipeline, Run, Stage, StageStatus, Workspace } from './protocol'
+import type { Pipeline, Run, Stage, StageState, StageStatus, Workspace } from './protocol'
 
 /** The icon for an agent, or the generic one for an id this build does not know. */
 function agentIcon(id: string): IconName {
@@ -42,6 +40,8 @@ function agentIcon(id: string): IconName {
 
 const pipelines = atom<Pipeline[]>([])
 const runs = atom<Run[]>([])
+/** Terminal text per run, once someone asked for it. Key present means the viewer is open. */
+const outputs = atom<Record<string, string>>({})
 const maxParallelRuns = atom(3)
 const workspaces = atom<Workspace[]>([])
 const selectedPipeline = atom('selectedPipeline', '', { persist: 'plugin' })
@@ -115,7 +115,20 @@ function startRun(): void {
       workspaceId: read(selectedWorkspace),
       task: read(task)
     })
-    set(runs, [answer.run, ...read(runs)])
+    // The worker also posts `runs.changed` with this run; without the filter the list holds it
+    // twice and the parallel count goes wrong.
+    set(runs, [answer.run, ...read(runs).filter((entry) => entry.id !== answer.run.id)])
+  })
+}
+
+/** Reads one run's live terminal, and opens its viewer. */
+function openOutput(run: Run): void {
+  void attempt(async () => {
+    const answer = await plugin.request('run.output', { runId: run.id, maxLines: 400 })
+    set(outputs, {
+      ...read(outputs),
+      [run.id]: answer.text ?? 'Nothing in that terminal yet.'
+    })
   })
 }
 
@@ -203,34 +216,45 @@ export function setup(ctx: PanelContext): void {
   void attempt(refresh)
 }
 
-function stageRows(run: Run): TableRow[] {
-  const declaredStages = read(pipelines).find((entry) => entry.id === run.pipelineId)?.stages
-  return run.stages.map((stage, index) => {
-    const declared = declaredStages?.find((item) => item.id === stage.stageId)
-    const elapsed =
-      stage.startedAt === null
-        ? null
-        : stage.endedAt === null
-          ? { type: 'relative' as const, at: stage.startedAt, format: 'duration' as const }
-          : `${Math.max(1, Math.round((stage.endedAt - stage.startedAt) / 1000))}s`
-    return {
-      key: stage.stageId,
-      cells: {
-        stage: `${index + 1}. ${declared?.name ?? stage.stageId}`,
-        state: stage.status,
-        elapsed
-      }
-    }
-  })
+function stageIcon(status: StageStatus): IconName {
+  switch (status) {
+    case 'done':
+      return 'check'
+    case 'running':
+      return 'activity'
+    case 'blocked':
+      return 'warning'
+    case 'failed':
+      return 'error'
+    case 'skipped':
+      return 'close'
+    default:
+      return 'next'
+  }
 }
 
-/** One run: its own stage table, its own controls, its own agent terminal behind them. */
+function stageName(run: Run, stageId: string): string {
+  const declared = read(pipelines).find((entry) => entry.id === run.pipelineId)?.stages
+  return declared?.find((item) => item.id === stageId)?.name ?? stageId
+}
+
+function stageDescription(stage: StageState): string {
+  const took =
+    stage.startedAt === null
+      ? ''
+      : stage.endedAt === null
+        ? ' · running'
+        : ` · ${Math.max(1, Math.round((stage.endedAt - stage.startedAt) / 1000))}s`
+  return `${stage.status}${took}${stage.note ? ` · ${stage.note}` : ''}`
+}
+
+/** One run: its stages are the links into the agent's terminal, plus its own controls. */
 function RunCard({ run }: { run: Run }) {
   const stage = run.stages[run.stageIndex]
   const done = run.stages.filter((item) => item.status === 'done').length
   const running = run.status === 'running'
   const blocked = run.status === 'blocked'
-  const tail = [...run.stages].reverse().find((item) => item.tail)?.tail ?? null
+  const text = read(outputs)[run.id]
   return (
     <Collapsible
       title={run.pipelineName}
@@ -248,15 +272,20 @@ function RunCard({ run }: { run: Run }) {
             <Text size="sm">{stage?.note ?? 'The agent reported a failed turn.'}</Text>
           </Callout>
         ) : null}
-        <Table
-          label={`Stages of ${run.pipelineName} in ${run.workspaceName}`}
-          columns={[
-            { key: 'stage', label: 'Stage', minWidth: 'sm' },
-            { key: 'state', label: 'State', width: 'sm' },
-            { key: 'elapsed', label: 'Took', width: 'xs', hideBelow: 'sm' }
-          ]}
-          rows={stageRows(run)}
-        />
+
+        <List label={`Stages of ${run.pipelineName} in ${run.workspaceName}`}>
+          {run.stages.map((item, index) => (
+            <ListItem
+              key={item.stageId}
+              icon={stageIcon(item.status)}
+              title={`${index + 1}. ${stageName(run, item.stageId)}`}
+              description={stageDescription(item)}
+              current={index === run.stageIndex}
+              onPress={() => openOutput(run)}
+            />
+          ))}
+        </List>
+
         <Row gap="xs" wrap>
           {running ? (
             <Button variant="outline" icon="stop" onPress={() => control('run.stop', run.id)}>
@@ -278,6 +307,9 @@ function RunCard({ run }: { run: Run }) {
               Skip stage
             </Button>
           ) : null}
+          <Button variant="ghost" icon="terminal" onPress={() => openOutput(run)}>
+            {text === undefined ? 'See output' : 'Refresh output'}
+          </Button>
           {!running && !blocked ? (
             <Button
               variant="ghost"
@@ -289,11 +321,11 @@ function RunCard({ run }: { run: Run }) {
             </Button>
           ) : null}
         </Row>
-        {tail ? (
-          <Collapsible title="Last terminal output">
-            <CodeView code={tail} maxHeight="sm" wrap />
-          </Collapsible>
+
+        {text !== undefined ? (
+          <CodeView code={text} label="Terminal output" maxHeight="md" wrap />
         ) : null}
+
         <Text size="xs" muted>
           {`Started ${new Date(run.startedAt).toLocaleTimeString()} with ${run.agent}`}
         </Text>

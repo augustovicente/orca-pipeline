@@ -82,6 +82,8 @@ declare module 'orca' {
     'run.skip': { input: { runId: string }; output: { runs: Run[] } }
     /** Drops a finished run from the list. */
     'run.remove': { input: { runId: string }; output: { runs: Run[] } }
+    /** The live terminal of one run, as text: the fastest way to see what a stage is doing. */
+    'run.output': { input: { runId: string; maxLines?: number }; output: { text: string | null } }
   }
   interface PluginPanelEvents {
     /** The run list changed, from this or another panel. */
