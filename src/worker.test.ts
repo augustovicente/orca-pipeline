@@ -122,12 +122,12 @@ test('the parallel limit is a setting, and the refusal names it', async () => {
   const host = hostFor(sent)
   const worker = await mountWorker(main, { host })
 
-  for (const task of ['one', 'two', 'three']) {
+  for (const task of ['one', 'two', 'three', 'four', 'five']) {
     await worker.request('run.start', { pipelineId: 'feature', workspaceId: 'workspace-1', task })
   }
   await assert.rejects(
-    worker.request('run.start', { pipelineId: 'feature', workspaceId: 'workspace-1', task: 'four' }),
-    /3 runs at a time is the limit/
+    worker.request('run.start', { pipelineId: 'feature', workspaceId: 'workspace-1', task: 'six' }),
+    /5 runs at a time is the limit/
   )
 
   // The limit itself is a setting.

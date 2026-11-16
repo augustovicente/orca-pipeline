@@ -66,11 +66,11 @@ have is a prompt.
   same terminal, so the agent keeps its context.
 - **Moves on when a stage is done.** The plugin listens for `agent.status.changed`: when the agent
   finishes its turn, the next stage starts. No polling, no waiting on the person.
-- **Runs several at once.** Up to three runs in parallel by default — each with its own agent
+- **Runs several at once.** Up to five runs in parallel by default — each with its own agent
   terminal, its own stage list and its own controls. One run waiting on you never stalls another;
-  set the ceiling under Settings → Pipeline → *Runs at a time* (1 = strictly sequential). The
-  default is three because each run is a real agent process with its own terminal: three overlaps a
-  review with a build without turning one machine into an office, and it is a setting, not a rule.
+  set the ceiling under Settings → Pipeline → *Runs at a time* (1 = strictly sequential, up to 8).
+  The default is five because each run is a real agent process with its own terminal: five overlaps
+  several reviews without turning one machine into an office, and it is a setting, not a rule.
 - **Stops when you are needed.** A blocked agent pauses the run and notifies you. Press *Carry on*
   after you answer it in the terminal; *Retry stage* and *Skip stage* are there when a stage goes
   wrong.

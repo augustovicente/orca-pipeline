@@ -3,7 +3,7 @@
   "manifestVersion": 2,
   "id": "pipeline",
   "name": "Pipeline",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "Staged workflows for your agents: plan, build, test and review chained in one agent session.",
   "license": "MIT",
   "engines": {
@@ -63,7 +63,7 @@
         "title": "Runs at a time",
         "description": "How many pipelines may run at once; each one launches its own agent. 1 makes runs strictly sequential.",
         "type": "integer",
-        "default": 3,
+        "default": 5,
         "minimum": 1,
         "maximum": 8
       }

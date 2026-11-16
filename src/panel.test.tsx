@@ -53,7 +53,7 @@ function hostWith(requests: Record<string, unknown>) {
         pipelines: [pipeline],
         defaultAgent: 'claude',
         availableAgents: ['claude', 'codex', 'opencode'],
-        maxParallelRuns: 3
+        maxParallelRuns: 5
       },
       'workspaces.list': { workspaces: [workspace] },
       ...requests
@@ -78,7 +78,7 @@ test('starts the selected pipeline with the typed task', async () => {
   await view.press({ role: 'button', text: 'Run' })
 
   assert.deepEqual(started, [{ pipelineId: 'feature', workspaceId: 'workspace-1', task: 'Ship it' }])
-  assert.ok(view.find({ text: /1 of 3 running/ }))
+  assert.ok(view.find({ text: /1 of 5 running/ }))
   assert.deepEqual(view.errors, [])
   assert.deepEqual(view.refusals, [])
   await view.unmount()
@@ -146,7 +146,7 @@ test('shows each parallel run with its own stage table', async () => {
   assert.equal(view.findAll({ type: 'List' }).length, 2)
   // Two runs, each with its own stage list.
   assert.equal(view.findAll({ label: /^1\. / }).length, 2)
-  assert.ok(view.find({ text: /2 of 3 running/ }))
+  assert.ok(view.find({ text: /2 of 5 running/ }))
   assert.deepEqual(view.errors, [])
   await view.unmount()
 })
@@ -155,6 +155,7 @@ test('refuses to start past the parallel limit', async () => {
   const view = await mount(panel, {
     host: hostWith({
       'run.state': {
+        // Three live runs against a ceiling of three: the button must be unavailable.
         runs: [
           { ...run, id: 'run-1' },
           { ...run, id: 'run-2' },

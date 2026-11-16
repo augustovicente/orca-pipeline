@@ -42,7 +42,7 @@ const pipelines = atom<Pipeline[]>([])
 const runs = atom<Run[]>([])
 /** Terminal text per run, once someone asked for it. Key present means the viewer is open. */
 const outputs = atom<Record<string, string>>({})
-const maxParallelRuns = atom(3)
+const maxParallelRuns = atom(5)
 const workspaces = atom<Workspace[]>([])
 const selectedPipeline = atom('selectedPipeline', '', { persist: 'plugin' })
 const selectedWorkspace = atom('selectedWorkspace', '', { persist: 'plugin' })

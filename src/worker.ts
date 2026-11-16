@@ -26,7 +26,7 @@ const KEEP_FINISHED = 12
 /** Cached settings: the worker re-reads them when the person changes one. */
 let stageTimeoutMinutes = 20
 let notify = true
-let maxParallelRuns = 3
+let maxParallelRuns = 5
 
 /** What a new pipeline, and the seeded ones, use. Orca keeps its own default agent in settings
  *  that plugins cannot read, so this is: the `defaultAgent` setting when set, else the agent
