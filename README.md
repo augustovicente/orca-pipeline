@@ -30,6 +30,29 @@ your review flow.
 
 Every flow is just prompts — edit them in the panel, or add your own.
 
+## From a prompt or a phone
+
+Orca Mobile has no plugin panels, so the panel is desktop-only. The same flows therefore also ship
+as an agent skill, which any prompt can start — including a phone **Quick Command**:
+
+```sh
+mkdir -p ~/.agents/skills/orca-pipeline
+cp skills/orca-pipeline/SKILL.md ~/.agents/skills/orca-pipeline/SKILL.md
+```
+
+Orca's agents pick the skill up on their next session. Then, from anywhere:
+
+- **Desktop or chat** — *"Use the orca-pipeline skill: run e2e QA on this worktree."*
+- **Phone** — Settings → Quick Commands → **Agent Prompt**, with the same sentence. The agent runs
+  scope → cases → environment → run → report on the paired desktop, marks each stage, and writes
+  `qa-report.md`, so the phone gets a notification and a file to read instead of a terminal to
+  babysit.
+- **A scheduled run** — *"Start the QA automation for this repo"*, or `orca automations run <id>`.
+
+The skill drives the stages itself, so it has no stage table and no *Carry on* button; the panel
+keeps the gates. Use the panel when you want to intervene between stages, the skill when all you
+have is a prompt.
+
 ## What it does
 
 - **Runs a pipeline in a workspace.** Pick a worktree or folder, pick a pipeline, describe the
