@@ -1,6 +1,6 @@
 // Runs the worker the way Orca does: start runs, let each agent finish its stage, and check every
 // prompt reached the right terminal.
-import { assert, mockHost, mountWorker, test } from 'orca/testing'
+import { assert, mockHost, mountWorker, test, type MockHostOptions } from 'orca/testing'
 import * as main from './worker'
 
 const workspace = {
@@ -15,9 +15,20 @@ const workspace = {
 
 type Sent = { terminalId: string; text: string }
 
-function hostOptions(sent: Sent[]) {
+const PLAIN = {
+  id: 'plain',
+  name: 'Plain',
+  agent: 'claude',
+  stages: [
+    { id: 'one', name: 'One', prompt: 'First do {{task}}' },
+    { id: 'two', name: 'Two', prompt: 'Second step' }
+  ]
+}
+
+function hostOptions(sent: Sent[], storage?: Record<string, unknown>) {
   let launches = 0
   return {
+    ...(storage ? { storage: storage as MockHostOptions['storage'] } : {}),
     results: {
       'workspace.list': { workspaces: [workspace], truncated: false },
       'agent.launch': ({ prompt }: { prompt?: string }) => {
@@ -35,9 +46,11 @@ function hostOptions(sent: Sent[]) {
   }
 }
 
-function hostFor(sent: Sent[]) {
-  return mockHost(hostOptions(sent))
+function hostFor(sent: Sent[], storage?: Record<string, unknown>) {
+  return mockHost(hostOptions(sent, storage))
 }
+
+const plainStorage = { pipelines: [PLAIN] }
 
 function idle(terminalId: string, state: 'working' | 'waiting' | 'blocked' | 'done') {
   return { paneKey: 'tab:pane', terminalId, workspaceId: 'workspace-1', state, receivedAt: 1 }
@@ -45,10 +58,10 @@ function idle(terminalId: string, state: 'working' | 'waiting' | 'blocked' | 'do
 
 test('chains every stage in one agent session', async () => {
   const sent: Sent[] = []
-  const worker = await mountWorker(main, { host: hostFor(sent) })
+  const worker = await mountWorker(main, { host: hostFor(sent, plainStorage) })
 
   const started = await worker.request('run.start', {
-    pipelineId: 'feature',
+    pipelineId: 'plain',
     workspaceId: 'workspace-1',
     task: 'Add a search endpoint'
   })
@@ -56,7 +69,7 @@ test('chains every stage in one agent session', async () => {
   assert.equal(sent.length, 1)
   assert.match(sent[0]?.text ?? '', /Add a search endpoint/)
 
-  for (let stage = 0; stage < 4; stage += 1) {
+  for (let stage = 0; stage < 2; stage += 1) {
     await worker.emit('agent.status.changed', idle('terminal-1', 'working'))
     await worker.emit('agent.status.changed', idle('terminal-1', 'waiting'))
   }
@@ -67,40 +80,52 @@ test('chains every stage in one agent session', async () => {
   assert.equal(run?.terminalId, 'terminal-1')
   assert.deepEqual(
     run?.stages.map((stage) => stage.status),
-    ['done', 'done', 'done', 'done']
+    ['done', 'done']
   )
-  assert.equal(sent.length, 4)
+  assert.equal(sent.length, 2)
   assert.deepEqual(worker.refusals, [])
   await worker.deactivate()
 })
 
 test('runs two pipelines at once, each on its own terminal', async () => {
   const sent: Sent[] = []
-  const worker = await mountWorker(main, { host: hostFor(sent) })
+  const second = {
+    ...PLAIN,
+    id: 'other',
+    name: 'Other',
+    stages: [
+      { id: 'one', name: 'One', prompt: 'Other first' },
+      { id: 'two', name: 'Two', prompt: 'Other second' }
+    ]
+  }
+  const worker = await mountWorker(main, {
+    host: hostFor(sent, { pipelines: [PLAIN, second] })
+  })
 
-  const feature = await worker.request('run.start', {
-    pipelineId: 'feature',
+  const first = await worker.request('run.start', {
+    pipelineId: 'plain',
     workspaceId: 'workspace-1',
     task: 'Add search'
   })
-  const bugfix = await worker.request('run.start', {
-    pipelineId: 'bugfix',
+  const other = await worker.request('run.start', {
+    pipelineId: 'other',
     workspaceId: 'workspace-1',
     task: 'Crash on empty input'
   })
-  assert.notEqual(feature.run.id, bugfix.run.id)
+  assert.notEqual(first.run.id, other.run.id)
+  assert.notEqual(first.run.terminalId, other.run.terminalId)
 
-  // Finishing a stage of the feature run must not move the bug fix run.
+  // Finishing a stage of the first run must not move the second.
   await worker.emit('agent.status.changed', idle('terminal-1', 'working'))
   await worker.emit('agent.status.changed', idle('terminal-1', 'waiting'))
 
   let state = await worker.request('run.state')
   assert.equal(state.runs.length, 2)
-  assert.equal(state.runs.find((run) => run.pipelineId === 'feature')?.stageIndex, 1)
-  assert.equal(state.runs.find((run) => run.pipelineId === 'bugfix')?.stageIndex, 0)
+  assert.equal(state.runs.find((run) => run.pipelineId === 'plain')?.stageIndex, 1)
+  assert.equal(state.runs.find((run) => run.pipelineId === 'other')?.stageIndex, 0)
 
-  // Its prompt went to the feature terminal, not the bug fix one.
-  const stageTwo = sent.filter((entry) => entry.text.includes('Implement the plan'))
+  // Its prompt went to the first terminal, not the second one.
+  const stageTwo = sent.filter((entry) => entry.text.includes('Second step'))
   assert.deepEqual(
     stageTwo.map((entry) => entry.terminalId),
     ['terminal-1']
@@ -110,8 +135,8 @@ test('runs two pipelines at once, each on its own terminal', async () => {
   await worker.emit('agent.status.changed', idle('terminal-2', 'working'))
   await worker.emit('agent.status.changed', idle('terminal-2', 'waiting'))
   state = await worker.request('run.state')
-  assert.equal(state.runs.find((run) => run.pipelineId === 'bugfix')?.stageIndex, 1)
-  assert.equal(state.runs.find((run) => run.pipelineId === 'feature')?.stageIndex, 1)
+  assert.equal(state.runs.find((run) => run.pipelineId === 'other')?.stageIndex, 1)
+  assert.equal(state.runs.find((run) => run.pipelineId === 'plain')?.stageIndex, 1)
 
   assert.deepEqual(worker.refusals, [])
   await worker.deactivate()
@@ -119,28 +144,28 @@ test('runs two pipelines at once, each on its own terminal', async () => {
 
 test('the parallel limit is a setting, and the refusal names it', async () => {
   const sent: Sent[] = []
-  const host = hostFor(sent)
+  const host = hostFor(sent, plainStorage)
   const worker = await mountWorker(main, { host })
 
   for (const task of ['one', 'two', 'three', 'four', 'five']) {
-    await worker.request('run.start', { pipelineId: 'feature', workspaceId: 'workspace-1', task })
+    await worker.request('run.start', { pipelineId: 'plain', workspaceId: 'workspace-1', task })
   }
   await assert.rejects(
-    worker.request('run.start', { pipelineId: 'feature', workspaceId: 'workspace-1', task: 'six' }),
+    worker.request('run.start', { pipelineId: 'plain', workspaceId: 'workspace-1', task: 'six' }),
     /5 runs at a time is the limit/
   )
 
   // The limit itself is a setting.
   const worker2 = await mountWorker(main, {
-    host: mockHost({ ...hostOptions([]), settings: { maxParallelRuns: 1 } })
+    host: mockHost({ ...hostOptions([], plainStorage), settings: { maxParallelRuns: 1 } })
   })
   await worker2.request('run.start', {
-    pipelineId: 'feature',
+    pipelineId: 'plain',
     workspaceId: 'workspace-1',
     task: 'one'
   })
   await assert.rejects(
-    worker2.request('run.start', { pipelineId: 'feature', workspaceId: 'workspace-1', task: 'two' }),
+    worker2.request('run.start', { pipelineId: 'plain', workspaceId: 'workspace-1', task: 'two' }),
     /1 run at a time is the limit/
   )
   await worker2.deactivate()
@@ -149,10 +174,10 @@ test('the parallel limit is a setting, and the refusal names it', async () => {
 
 test('stops one run when its agent is blocked, and carries it on alone', async () => {
   const sent: Sent[] = []
-  const worker = await mountWorker(main, { host: hostFor(sent) })
+  const worker = await mountWorker(main, { host: hostFor(sent, plainStorage) })
 
   const { run } = await worker.request('run.start', {
-    pipelineId: 'bugfix',
+    pipelineId: 'plain',
     workspaceId: 'workspace-1',
     task: 'Crash on empty input'
   })
@@ -310,10 +335,10 @@ test('the default agent setting wins, and adopted seeds stay edited', async () =
 
 test('pauses, rather than fails, when Orca refuses input outside the active worktree', async () => {
   const sent: Sent[] = []
-  const host = hostFor(sent)
+  const host = hostFor(sent, plainStorage)
   const worker = await mountWorker(main, { host })
   const { run } = await worker.request('run.start', {
-    pipelineId: 'bugfix',
+    pipelineId: 'plain',
     workspaceId: 'workspace-1',
     task: 'Crash on empty input'
   })
@@ -403,6 +428,56 @@ test('a modeled stage starts its own process and falls back to the next model', 
   assert.equal(current?.model, 'second')
   assert.deepEqual(current?.triedModels, ['first', 'second'])
   assert.equal(current?.status, 'running')
+  assert.deepEqual(worker.refusals, [])
+  await worker.deactivate()
+})
+
+test('a seeded stage runs on the model its reasoning level maps to', async () => {
+  const created: string[] = []
+  const sent: Sent[] = []
+  const host = mockHost({
+    settings: { modelBootSeconds: 0 },
+    storage: {
+      // An install from before reasoning levels: the shipped level is adopted on load.
+      pipelines: [
+        {
+          id: 'qa',
+          name: 'QA',
+          agent: 'opencode',
+          stages: [
+            { id: 'scope', name: 'Scope', prompt: 'Scope {{task}}' },
+            { id: 'cases', name: 'Cases', prompt: 'Cases' }
+          ]
+        }
+      ]
+    },
+    results: {
+      'workspace.list': { workspaces: [workspace], truncated: false },
+      'terminal.create': ({ command }: { command?: string }) => {
+        created.push(command ?? '')
+        return { terminalId: `modeled-${created.length}` }
+      },
+      'terminal.sendText': ({ terminalId, text }: { terminalId: string; text: string }) => {
+        sent.push({ terminalId, text })
+        return { accepted: true }
+      },
+      'terminal.read': { lines: [], truncated: false }
+    }
+  })
+  const worker = await mountWorker(main, { host })
+
+  const adopted = await worker.request('pipelines.list')
+  const qa = adopted.pipelines.find((pipeline) => pipeline.id === 'qa')
+  assert.equal(qa?.stages[0]?.reasoning, 'high')
+  assert.equal(qa?.stages[1]?.reasoning, 'medium')
+
+  await worker.request('run.start', {
+    pipelineId: 'qa',
+    workspaceId: 'workspace-1',
+    task: 'check the app'
+  })
+  // The level's model and agent, not a hardcoded one.
+  assert.match(created[0] ?? '', /opencode --model 'opencode-go\/deepseek-v4\.1-flash'/)
   assert.deepEqual(worker.refusals, [])
   await worker.deactivate()
 })

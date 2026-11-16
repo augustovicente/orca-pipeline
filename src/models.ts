@@ -8,8 +8,9 @@ import type { Stage } from './protocol'
 export const DEFAULT_ATTEMPTS = 2
 
 /** `model` first, then `fallbacks`, without blanks or repeats. Empty means "the agent's default". */
-export function modelChain(stage: Stage): string[] {
-  const chain = [stage.model ?? '', ...(stage.fallbacks ?? [])]
+export function modelChain(stage: Stage, levelModel: string | null = null): string[] {
+  const primary = stage.model?.trim() || levelModel?.trim() || ''
+  const chain = [primary, ...(stage.fallbacks ?? [])]
     .map((model) => model.trim())
     .filter(Boolean)
   return [...new Set(chain)]

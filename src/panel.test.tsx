@@ -57,7 +57,12 @@ function hostWith(requests: Record<string, unknown>) {
         pipelines: [pipeline],
         defaultAgent: 'claude',
         availableAgents: ['claude', 'codex', 'opencode'],
-        maxParallelRuns: 5
+        maxParallelRuns: 5,
+        levels: {
+          high: { agent: 'opencode', model: 'opencode-go/deepseek-v4.1-flash' },
+          medium: { agent: 'opencode', model: 'opencode/mimo-v2.6-flash-free' },
+          low: { agent: 'opencode', model: 'opencode-go/beam-free' }
+        }
       },
       'workspaces.list': { workspaces: [workspace] },
       ...requests
@@ -168,7 +173,12 @@ test('refuses to start past the parallel limit', async () => {
         pipelines: [pipeline],
         defaultAgent: 'claude',
         availableAgents: ['claude'],
-        maxParallelRuns: 3
+        maxParallelRuns: 3,
+        levels: {
+          high: { agent: 'opencode', model: 'opencode-go/deepseek-v4.1-flash' },
+          medium: { agent: 'opencode', model: 'opencode/mimo-v2.6-flash-free' },
+          low: { agent: 'opencode', model: 'opencode-go/beam-free' }
+        }
       }
     })
   })

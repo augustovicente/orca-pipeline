@@ -3,11 +3,18 @@
 export type StageStatus = 'pending' | 'running' | 'done' | 'failed' | 'blocked' | 'skipped'
 export type RunStatus = 'running' | 'blocked' | 'failed' | 'done' | 'stopped'
 
+/** How much reasoning a stage is worth, mapped to an agent and model in Settings. */
+export type Reasoning = 'high' | 'medium' | 'low'
+
 /** One step of a pipeline: a name and the prompt sent to the agent for it. */
 export type Stage = {
   id: string
   name: string
   prompt: string
+  /** Reasoning level this stage needs; resolves to the agent and model set for it in Settings. */
+  reasoning?: Reasoning
+  /** Agent for this stage, overriding the pipeline's. */
+  agent?: string
   /** Model for this stage. Set, the stage runs its own agent process with it. */
   model?: string
   /** Models to try, in order, after `model` gives up. */
@@ -17,7 +24,14 @@ export type Stage = {
 }
 
 /** A staged workflow: an ordered list of prompts run in one agent session. */
-export type Pipeline = { id: string; name: string; agent: string; stages: Stage[] }
+export type Pipeline = {
+  id: string
+  name: string
+  agent: string
+  /** Default reasoning level for this pipeline's stages, when a stage names none. */
+  reasoning?: Reasoning
+  stages: Stage[]
+}
 
 /** How one stage of one run went. */
 export type StageState = {
@@ -83,6 +97,7 @@ declare module 'orca' {
         defaultAgent: string
         availableAgents: string[]
         maxParallelRuns: number
+        levels: Record<Reasoning, { agent: string; model: string }>
       }
     }
     /** Starts a pipeline in a workspace; the first stage launches its own agent. */

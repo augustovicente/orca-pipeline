@@ -7,6 +7,7 @@ import type { Pipeline, Stage } from './protocol'
 const ENVIRONMENT: Stage = {
   id: 'environment',
   name: 'Environment',
+  reasoning: 'low',
   prompt:
     'Bring the product up: install what is missing, start the dev server or build, and wait until ' +
     'it answers. Write down the URL, the account and the seed data you used, the commit, and how ' +
@@ -28,6 +29,7 @@ export const DEFAULT_PIPELINES: Pipeline[] = [
       {
         id: 'plan',
         name: 'Plan',
+        reasoning: 'high',
         prompt:
           'Task: {{task}}\n\n' +
           'Plan only — do not edit files. Read the code the task touches and answer with a short ' +
@@ -37,6 +39,7 @@ export const DEFAULT_PIPELINES: Pipeline[] = [
       {
         id: 'build',
         name: 'Build',
+        reasoning: 'high',
         prompt:
           'Implement the plan you just wrote. Keep the change as small as the task allows, match ' +
           'the surrounding code, and leave unrelated files alone. When it is written, summarize ' +
@@ -45,6 +48,7 @@ export const DEFAULT_PIPELINES: Pipeline[] = [
       {
         id: 'test',
         name: 'Test',
+        reasoning: 'low',
         prompt:
           'Verify the change: run the project’s tests, type check and lint for what you touched. ' +
           'Fix what fails. If something cannot be fixed here, say so plainly. End with the exact ' +
@@ -53,6 +57,7 @@ export const DEFAULT_PIPELINES: Pipeline[] = [
       {
         id: 'review',
         name: 'Review',
+        reasoning: 'high',
         prompt:
           'Review your own change as a strict reviewer: correctness, edge cases, error handling, ' +
           'tests, and anything that broke elsewhere. Fix what you find. Finish with a short ' +
@@ -68,6 +73,7 @@ export const DEFAULT_PIPELINES: Pipeline[] = [
       {
         id: 'scope',
         name: 'Scope',
+        reasoning: 'high',
         prompt:
           'Under test: {{task}}\n\n' +
           'Establish what is being tested before anything else: the change under review (diff, ' +
@@ -78,6 +84,7 @@ export const DEFAULT_PIPELINES: Pipeline[] = [
       {
         id: 'cases',
         name: 'Cases',
+        reasoning: 'medium',
         prompt:
           'Write the end-to-end checklist: for each journey, the happy path, at least two edge ' +
           'cases, and the regression most likely to slip through. Give every case an id, a ' +
@@ -89,6 +96,7 @@ export const DEFAULT_PIPELINES: Pipeline[] = [
       {
         id: 'run',
         name: 'Run',
+        reasoning: 'medium',
         prompt:
           'Run the checklist against the running app in Orca’s embedded browser — use ' +
           '`orca tab create --url`, `orca snapshot`, `orca click --element`, `orca fill`, ' +
@@ -100,6 +108,7 @@ export const DEFAULT_PIPELINES: Pipeline[] = [
       {
         id: 'report',
         name: 'Report',
+        reasoning: 'medium',
         prompt:
           'Write the QA report: what was tested and on what commit, the pass/fail table, then ' +
           'each failure with the shortest reproduction, its impact and a suggested fix. Include ' +
@@ -117,6 +126,7 @@ export const DEFAULT_PIPELINES: Pipeline[] = [
       {
         id: 'scope',
         name: 'Scope',
+        reasoning: 'high',
         prompt:
           'Surfaces under review: {{task}}\n\n' +
           'You are a senior product designer reviewing this build as shipped, not as designed. ' +
@@ -128,6 +138,7 @@ export const DEFAULT_PIPELINES: Pipeline[] = [
       {
         id: 'criteria',
         name: 'Criteria',
+        reasoning: 'high',
         prompt:
           'Write the checklist you will apply, as criteria you can see or measure on screen: ' +
           'hierarchy and scan path; spacing and alignment on a consistent grid; type scale and ' +
@@ -140,6 +151,7 @@ export const DEFAULT_PIPELINES: Pipeline[] = [
       {
         id: 'walkthrough',
         name: 'Walkthrough',
+        reasoning: 'medium',
         prompt:
           'Walk every surface end to end in Orca’s embedded browser: `orca tab create --url`, ' +
           '`orca snapshot`, `orca click`, `orca fill`, `orca keypress`, and `orca eval` to measure ' +
@@ -151,6 +163,7 @@ export const DEFAULT_PIPELINES: Pipeline[] = [
       {
         id: 'findings',
         name: 'Findings',
+        reasoning: 'high',
         prompt:
           'Turn the evidence into findings. Each one: severity (blocker / major / minor / nit), ' +
           'the screen and element, expected versus actual, the criterion and the WCAG clause it ' +
@@ -161,6 +174,7 @@ export const DEFAULT_PIPELINES: Pipeline[] = [
       {
         id: 'report',
         name: 'Report',
+        reasoning: 'medium',
         prompt:
           'Write ux-review.md at the repo root: what was reviewed (commit, breakpoints, themes, ' +
           'browser), the criteria table with pass/fail and the measurement behind each, the ' +
@@ -178,6 +192,7 @@ export const DEFAULT_PIPELINES: Pipeline[] = [
       {
         id: 'scope',
         name: 'Scope',
+        reasoning: 'high',
         prompt:
           'Under test: {{task}}\n\n' +
           'You are a senior QA engineer doing a risk-based end-to-end pass. State the commit, ' +
@@ -188,6 +203,7 @@ export const DEFAULT_PIPELINES: Pipeline[] = [
       {
         id: 'risk',
         name: 'Risk',
+        reasoning: 'high',
         prompt:
           'Design the pass before running it: a risk matrix (impact × likelihood) for what ' +
           'changed, the charters you will follow, and the data each needs — valid, boundary, ' +
@@ -198,6 +214,7 @@ export const DEFAULT_PIPELINES: Pipeline[] = [
       {
         id: 'cases',
         name: 'Cases',
+        reasoning: 'medium',
         prompt:
           'Write the checklist from the risk matrix. Every case gets an id, a precondition, the ' +
           'exact steps, the expected result on screen, the oracle you will judge it by, and the ' +
@@ -208,6 +225,7 @@ export const DEFAULT_PIPELINES: Pipeline[] = [
       {
         id: 'run',
         name: 'Run',
+        reasoning: 'medium',
         prompt:
           'Run the checklist in Orca’s embedded browser — `orca tab create --url`, `orca snapshot`, ' +
           '`orca click/fill/keypress`, `orca tab close`; for a mobile app use `orca emulator ax`, ' +
@@ -219,6 +237,7 @@ export const DEFAULT_PIPELINES: Pipeline[] = [
       {
         id: 'report',
         name: 'Report',
+        reasoning: 'medium',
         prompt:
           'Write qa-report.md at the repo root: environment and build, the pass/fail table, then ' +
           'each defect with severity (S1 blocker, S2 major, S3 minor, S4 cosmetic), exact steps, ' +
@@ -236,6 +255,7 @@ export const DEFAULT_PIPELINES: Pipeline[] = [
       {
         id: 'scope',
         name: 'Scope',
+        reasoning: 'high',
         prompt:
           'Product under review: {{task}}\n\n' +
           'You are a senior product manager judging delivered commercial value, not code and not ' +
@@ -246,6 +266,7 @@ export const DEFAULT_PIPELINES: Pipeline[] = [
       {
         id: 'journey',
         name: 'Journey',
+        reasoning: 'medium',
         prompt:
           'Walk the commercial journey end to end in Orca’s embedded browser: first impression → ' +
           'signup or entry → activation (the first moment of real use) → the aha moment → the ' +
@@ -256,6 +277,7 @@ export const DEFAULT_PIPELINES: Pipeline[] = [
       {
         id: 'audit',
         name: 'Value audit',
+        reasoning: 'high',
         prompt:
           'Audit where value is delivered and where it leaks: is the value visible before any ' +
           'commitment; is time-to-value acceptable; does the copy sell outcomes or features; is ' +
@@ -266,6 +288,7 @@ export const DEFAULT_PIPELINES: Pipeline[] = [
       {
         id: 'report',
         name: 'Report',
+        reasoning: 'high',
         prompt:
           'Write product-review.md at the repo root: the promise as the product states it versus ' +
           'what a new user actually experiences; the journey with the friction points and ' +
@@ -284,6 +307,7 @@ export const DEFAULT_PIPELINES: Pipeline[] = [
       {
         id: 'reproduce',
         name: 'Reproduce',
+        reasoning: 'high',
         prompt:
           'Bug: {{task}}\n\n' +
           'Find the cause first. Locate the code involved, state the root cause in a few lines, ' +
@@ -292,6 +316,7 @@ export const DEFAULT_PIPELINES: Pipeline[] = [
       {
         id: 'fix',
         name: 'Fix',
+        reasoning: 'high',
         prompt:
           'Fix the root cause you found, not the symptom. Keep the diff small and add a test that ' +
           'fails before the fix. Then stop and wait.'
@@ -299,6 +324,7 @@ export const DEFAULT_PIPELINES: Pipeline[] = [
       {
         id: 'prove',
         name: 'Prove',
+        reasoning: 'low',
         prompt:
           'Run the reproduction and the test suite. Show that the fix holds and that nothing else ' +
           'moved. End with the commands you ran, their result, and any remaining risk.'

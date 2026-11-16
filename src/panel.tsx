@@ -31,7 +31,15 @@ import {
   type Tone
 } from 'orca'
 import { AGENT_CHOICES } from './agent-choices'
-import type { Pipeline, Run, Stage, StageState, StageStatus, Workspace } from './protocol'
+import type {
+  Pipeline,
+  Reasoning,
+  Run,
+  Stage,
+  StageState,
+  StageStatus,
+  Workspace
+} from './protocol'
 
 /** The icon for an agent, or the generic one for an id this build does not know. */
 function agentIcon(id: string): IconName {
@@ -49,6 +57,11 @@ const selectedWorkspace = atom('selectedWorkspace', '', { persist: 'plugin' })
 const agentPicker = atom(false)
 const defaultAgent = atom('claude')
 const availableAgents = atom<string[]>([])
+const levels = atom<Record<Reasoning, { agent: string; model: string }>>({
+  high: { agent: '', model: '' },
+  medium: { agent: '', model: '' },
+  low: { agent: '', model: '' }
+})
 const task = atom('task', '')
 const tab = atom('tab', 'run')
 const editing = atom<Pipeline | null>(null)
@@ -87,6 +100,7 @@ async function refresh(): Promise<void> {
   set(defaultAgent, state.defaultAgent)
   set(maxParallelRuns, state.maxParallelRuns)
   set(availableAgents, state.availableAgents ?? [])
+  set(levels, state.levels)
   const listed = await plugin.request('workspaces.list')
   set(workspaces, listed.workspaces)
   if (read(selectedPipeline) === '' && state.pipelines[0]) {
@@ -514,6 +528,22 @@ function PipelinesTab() {
             placeholder="claude"
             onChange={(value) => set(editing, { ...draft, agent: value })}
           />
+          <Select
+            label="Reasoning for its stages"
+            value={draft.reasoning ?? ''}
+            options={[
+              { value: '', label: 'As each stage says' },
+              { value: 'high', label: 'High' },
+              { value: 'medium', label: 'Medium' },
+              { value: 'low', label: 'Low' }
+            ]}
+            onChange={(value) =>
+              set(editing, {
+                ...draft,
+                reasoning: value === '' ? undefined : (value as Reasoning)
+              })
+            }
+          />
           <Text size="xs" muted>
             Only agents installed on this machine are listed. Any other agent id Orca can launch
             works in the field above, and the list marks whichever one is set.
@@ -540,6 +570,36 @@ function PipelinesTab() {
                   rows={5}
                   value={stage.prompt}
                   onChange={(value) => editStage(index, { prompt: value })}
+                />
+                <Select
+                  label="Reasoning"
+                  value={stage.reasoning ?? ''}
+                  options={[
+                    { value: '', label: 'The pipeline’s, or the agent default' },
+                    { value: 'high', label: 'High' },
+                    { value: 'medium', label: 'Medium' },
+                    { value: 'low', label: 'Low' }
+                  ]}
+                  onChange={(value) =>
+                    editStage(index, {
+                      reasoning: value === '' ? undefined : (value as Reasoning)
+                    })
+                  }
+                />
+                <Text size="xs" muted>
+                  {`high → ${read(levels).high.model || '—'}${
+                    read(levels).high.agent ? ` on ${read(levels).high.agent}` : ''
+                  } · medium → ${read(levels).medium.model || '—'}${
+                    read(levels).medium.agent ? ` on ${read(levels).medium.agent}` : ''
+                  } · low → ${read(levels).low.model || '—'}${
+                    read(levels).low.agent ? ` on ${read(levels).low.agent}` : ''
+                  }`}
+                </Text>
+                <Input
+                  label="Agent override"
+                  placeholder="the pipeline's agent"
+                  value={stage.agent ?? ''}
+                  onChange={(value) => editStage(index, { agent: value })}
                 />
                 <Input
                   label="Model"

@@ -3,7 +3,7 @@
   "manifestVersion": 2,
   "id": "pipeline",
   "name": "Pipeline",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "description": "Staged workflows for your agents: plan, build, test and review chained in one agent session.",
   "license": "MIT",
   "engines": {
@@ -57,6 +57,43 @@
         "title": "Default agent",
         "description": "Agent for new pipelines and the seeded ones. Leave empty to use the agent running in your focused workspace, then claude.",
         "type": "string"
+      },
+      {
+        "key": "highAgent",
+        "title": "High reasoning — agent",
+        "description": "Agent used by stages that ask for high reasoning, unless the pipeline or the stage names one.",
+        "type": "string",
+        "default": "opencode"
+      },
+      {
+        "key": "highModel",
+        "title": "High reasoning — model",
+        "type": "string",
+        "default": "opencode-go/deepseek-v4.1-flash"
+      },
+      {
+        "key": "mediumAgent",
+        "title": "Medium reasoning — agent",
+        "type": "string",
+        "default": "opencode"
+      },
+      {
+        "key": "mediumModel",
+        "title": "Medium reasoning — model",
+        "type": "string",
+        "default": "opencode/mimo-v2.6-flash-free"
+      },
+      {
+        "key": "lowAgent",
+        "title": "Low reasoning — agent",
+        "type": "string",
+        "default": "opencode"
+      },
+      {
+        "key": "lowModel",
+        "title": "Low reasoning — model",
+        "type": "string",
+        "default": "opencode-go/beam-free"
       },
       {
         "key": "modelBootSeconds",

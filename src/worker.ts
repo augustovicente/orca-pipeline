@@ -10,13 +10,15 @@ import type { OrcaWorkerApi } from 'orca/worker'
 import { detectInstalledAgents } from './agent-detect'
 import { DEFAULT_PIPELINES } from './defaults'
 import { agentBinary, attemptsPerModel, modelChain, modeledCommand } from './models'
-import type { Pipeline, Run, Stage, StageState, Workspace } from './protocol'
+import type { Pipeline, Reasoning, Run, Stage, StageState, Workspace } from './protocol'
 
 const PIPELINES_KEY = 'pipelines'
 /** Ids of the seeded pipelines this plugin has already offered, so a deleted seed stays deleted. */
 const SEEDED_KEY = 'seeded'
 /** Set once the seeded flows have picked up the resolved default agent. */
 const AGENT_SEEDS_KEY = 'seedAgentMigrated'
+/** Set once the seeded flows have picked up their reasoning levels. */
+const REASONING_SEEDS_KEY = 'reasoningSeeded'
 const RUNS_KEY = 'runs'
 /** Written by 0.4.x, which kept one run at a time; adopted into `runs` on activation. */
 const LEGACY_RUN_KEY = 'run'
@@ -30,6 +32,12 @@ let notify = true
 let maxParallelRuns = 5
 /** How long a modeled agent gets to boot before its prompt is typed. */
 let modelBootSeconds = 8
+/** Agent and model per reasoning level: what a stage gets when it names a level and no model. */
+let levels: Record<Reasoning, { agent: string; model: string }> = {
+  high: { agent: 'opencode', model: 'opencode-go/deepseek-v4.1-flash' },
+  medium: { agent: 'opencode', model: 'opencode/mimo-v2.6-flash-free' },
+  low: { agent: 'opencode', model: 'opencode-go/beam-free' }
+}
 
 /** What a new pipeline, and the seeded ones, use. Orca keeps its own default agent in settings
  *  that plugins cannot read, so this is: the `defaultAgent` setting when set, else the agent
@@ -106,6 +114,27 @@ function currentStage(run: Run): StageState | undefined {
 
 function pipelineOf(id: string): Pipeline | undefined {
   return pipelines.find((entry) => entry.id === id)
+}
+
+/**
+ * What a stage runs as: its own agent or the pipeline's, and the model its reasoning level stands
+ * for. An explicit `model` always wins; a stage with no level and no model uses the agent default.
+ */
+function resolved(
+  stage: Stage,
+  pipeline: Pipeline | undefined,
+  fallbackAgent: string
+): { agent: string; chain: string[] } {
+  const level = stage.reasoning ?? pipeline?.reasoning ?? null
+  const config = level ? levels[level] : null
+  const agent =
+    stage.agent?.trim() || pipeline?.agent?.trim() || config?.agent || fallbackAgent
+  return { agent, chain: modelChain(stage, config?.model ?? null) }
+}
+
+function chainFor(run: Run, stage: Stage | undefined): string[] {
+  if (!stage) return []
+  return resolved(stage, pipelineOf(run.pipelineId), defaultAgent).chain
 }
 
 /** Replaces `{{task}}` in every stage prompt, and gives the first stage one if it has none. */
@@ -320,7 +349,8 @@ async function deliverStage(orca: OrcaWorkerApi, run: Run, index: number): Promi
     return
   }
   const prompt = promptFor(declared, index, run.task)
-  const chain = modelChain(declared)
+  const { agent, chain } = resolved(declared, pipelineOf(run.pipelineId), defaultAgent)
+  run.agent = agent
 
   try {
     if (chain.length === 0) {
@@ -328,7 +358,7 @@ async function deliverStage(orca: OrcaWorkerApi, run: Run, index: number): Promi
       if (run.terminalId === null) {
         const launched = await orca.host.call('agent.launch', {
           workspaceId: run.workspaceId,
-          agent: run.agent,
+          agent,
           prompt
         })
         run.terminalId = launched.terminalId
@@ -349,7 +379,7 @@ async function deliverStage(orca: OrcaWorkerApi, run: Run, index: number): Promi
 
     // A modeled stage runs its own process: Orca's `agent.launch` cannot take a model.
     const model = chain[Math.min(run.modelIndex, chain.length - 1)] ?? chain[0]!
-    const binary = agentBinary(run.agent)
+    const binary = agentBinary(agent)
     if (!binary) {
       await fail(
         orca,
@@ -416,7 +446,7 @@ async function failOrFallback(
   const declared = stage
     ? pipelineOf(run.pipelineId)?.stages.find((entry) => entry.id === stage.stageId)
     : undefined
-  const chain = declared ? modelChain(declared) : []
+  const chain = declared ? chainFor(run, declared) : []
   if (!declared || chain.length === 0) {
     await fail(orca, run, index, reason)
     return
@@ -583,6 +613,27 @@ async function adoptDefaultAgent(orca: OrcaWorkerApi, list: Pipeline[]): Promise
   return next
 }
 
+/** One-shot: the seeded flows take the reasoning level shipped with each of their stages. */
+async function adoptReasoning(orca: OrcaWorkerApi, list: Pipeline[]): Promise<Pipeline[]> {
+  if ((await orca.storage.get(REASONING_SEEDS_KEY)) === true) return list
+  const seeds = new Map(DEFAULT_PIPELINES.map((seed) => [seed.id, seed]))
+  let changed = false
+  const next = list.map((entry) => {
+    const seed = seeds.get(entry.id)
+    if (!seed) return entry
+    const stages = entry.stages.map((stage) => {
+      const shipped = seed.stages.find((item) => item.id === stage.id)
+      if (!shipped?.reasoning || stage.reasoning || stage.model?.trim()) return stage
+      changed = true
+      return { ...stage, reasoning: shipped.reasoning }
+    })
+    return changed ? { ...entry, stages } : entry
+  })
+  if (changed) await orca.storage.set(PIPELINES_KEY, asJson(next))
+  await orca.storage.set(REASONING_SEEDS_KEY, true)
+  return next
+}
+
 async function storedRuns(orca: OrcaWorkerApi): Promise<Run[]> {
   const stored = await orca.storage.get(RUNS_KEY)
   let list: Run[] = Array.isArray(stored) ? (plain(stored) as Run[]) : []
@@ -643,6 +694,12 @@ async function readSettings(orca: OrcaWorkerApi): Promise<void> {
     if (typeof timeout === 'number' && Number.isFinite(timeout)) stageTimeoutMinutes = timeout
     const shouldNotify = await orca.settings.get('notify')
     if (typeof shouldNotify === 'boolean') notify = shouldNotify
+    for (const level of ['high', 'medium', 'low'] as const) {
+      const agent = await orca.settings.get(`${level}Agent`)
+      const model = await orca.settings.get(`${level}Model`)
+      if (typeof agent === 'string' && agent.trim()) levels[level].agent = agent.trim()
+      if (typeof model === 'string' && model.trim()) levels[level].model = model.trim()
+    }
     const boot = await orca.settings.get('modelBootSeconds')
     if (typeof boot === 'number' && Number.isFinite(boot)) {
       modelBootSeconds = Math.min(60, Math.max(0, Math.round(boot)))
@@ -668,7 +725,7 @@ function missing(): Error {
 export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   availableAgents = detectInstalledAgents()
   await readSettings(orca)
-  pipelines = await adoptDefaultAgent(orca, await storedPipelines(orca))
+  pipelines = await adoptReasoning(orca, await adoptDefaultAgent(orca, await storedPipelines(orca)))
   runs = await storedRuns(orca)
   setStatusBar(orca)
 
@@ -728,7 +785,12 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
       pipelines: plain(pipelines),
       defaultAgent,
       availableAgents,
-      maxParallelRuns
+      maxParallelRuns,
+      levels: {
+        high: { ...levels.high },
+        medium: { ...levels.medium },
+        low: { ...levels.low }
+      }
     }
   })
 
