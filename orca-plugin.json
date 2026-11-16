@@ -3,7 +3,7 @@
   "manifestVersion": 2,
   "id": "pipeline",
   "name": "Pipeline",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "description": "Staged workflows for your agents: plan, build, test and review chained in one agent session.",
   "license": "MIT",
   "engines": {

@@ -569,6 +569,8 @@ async function failOrFallback(
   }
 
   run.attempt += 1
+  // The process that failed is not worth typing into again; the next try gets a fresh one.
+  run.terminalId = null
   const perModel = attemptsPerModel(declared)
   if (run.attempt < perModel) {
     await persist(orca)
@@ -1023,6 +1025,7 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
     run.modelIndex = 0
     run.attempt = 0
     run.triedModels = []
+    run.terminalId = null
     await startStage(orca, run, run.stageIndex)
     return { runs: plain(runs) }
   })

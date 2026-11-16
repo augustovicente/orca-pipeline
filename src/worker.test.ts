@@ -438,6 +438,7 @@ test('a modeled stage starts its own process and falls back to the next model', 
   const state = await worker.request('run.state')
   const current = state.runs[0]
   assert.equal(launches[1]?.[launches[1]?.indexOf('--model') + 1], 'second')
+  // A failed process is not reused: the next model gets a fresh terminal.
   assert.equal(current?.terminalId, 'modeled-2')
   assert.equal(current?.model, 'second')
   assert.deepEqual(current?.triedModels, ['first', 'second'])
