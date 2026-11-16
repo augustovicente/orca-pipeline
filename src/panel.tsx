@@ -310,14 +310,19 @@ function RunTab() {
   const workspaceId = read(selectedWorkspace)
   const limit = read(maxParallelRuns)
   const active = all.filter((run) => run.status === 'running' || run.status === 'blocked').length
+  const blocked = all.filter((run) => run.status === 'blocked').length
   const full = active >= limit
 
   return (
     <Stack gap="md">
       <Row justify="between" align="center">
         <Heading>Pipeline</Heading>
-        <Badge tone={active > 0 ? 'accent' : 'neutral'}>
-          {active > 0 ? `${active} of ${limit} running` : 'idle'}
+        <Badge tone={blocked > 0 ? 'warning' : active > 0 ? 'accent' : 'neutral'}>
+          {active === 0
+            ? 'idle'
+            : blocked > 0
+              ? `${active} active · ${blocked} need you`
+              : `${active} of ${limit} running`}
         </Badge>
       </Row>
 
