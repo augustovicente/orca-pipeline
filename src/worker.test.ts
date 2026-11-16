@@ -1,7 +1,16 @@
 // Runs the worker the way Orca does: start runs, let each agent finish its stage, and check every
 // prompt reached the right terminal.
-import { assert, mockHost, mountWorker, test, type MockHostOptions } from 'orca/testing'
+import {
+  afterEach,
+  assert,
+  mockHost,
+  mountWorker,
+  test,
+  type MockHostOptions
+} from 'orca/testing'
 import * as main from './worker'
+
+afterEach(() => main.resetCliRunnerForTests())
 
 const workspace = {
   id: 'workspace-1',
@@ -368,7 +377,11 @@ test('pauses, rather than fails, when Orca refuses input outside the active work
 })
 
 test('a modeled stage starts its own process and falls back to the next model', async () => {
-  const created: string[] = []
+  const launches: string[][] = []
+  main.setCliRunnerForTests(async (args) => {
+    launches.push(args)
+    return { result: { launch: { outcome: { handle: `modeled-${launches.length}` } } } }
+  })
   const sent: Sent[] = []
   const host = mockHost({
     settings: { modelBootSeconds: 0 },
@@ -393,10 +406,6 @@ test('a modeled stage starts its own process and falls back to the next model', 
     },
     results: {
       'workspace.list': { workspaces: [workspace], truncated: false },
-      'terminal.create': ({ command }: { command?: string }) => {
-        created.push(command ?? '')
-        return { terminalId: `modeled-${created.length}` }
-      },
       'terminal.sendText': ({ terminalId, text }: { terminalId: string; text: string }) => {
         sent.push({ terminalId, text })
         return { accepted: true }
@@ -411,8 +420,12 @@ test('a modeled stage starts its own process and falls back to the next model', 
     workspaceId: 'workspace-1',
     task: 'review the app'
   })
-  assert.match(created[0] ?? '', /claude --model 'first'/)
-  assert.deepEqual(sent.map((entry) => entry.terminalId), ['modeled-1'])
+  // Orca's own launcher takes the model, and delivers the stage prompt itself.
+  assert.deepEqual(launches[0]?.slice(0, 3), ['agent', 'launch', '--agent'])
+  assert.equal(launches[0]?.[launches[0]?.indexOf('--model') + 1], 'first')
+  assert.ok(launches[0]?.includes('--prompt'))
+  assert.equal(run.terminalId, 'modeled-1')
+  assert.equal(sent.length, 0)
   assert.equal(run.model, 'first')
 
   // One failure is the whole allowance for that model, so the next one starts a new process.
@@ -424,7 +437,8 @@ test('a modeled stage starts its own process and falls back to the next model', 
 
   const state = await worker.request('run.state')
   const current = state.runs[0]
-  assert.match(created[1] ?? '', /claude --model 'second'/)
+  assert.equal(launches[1]?.[launches[1]?.indexOf('--model') + 1], 'second')
+  assert.equal(current?.terminalId, 'modeled-2')
   assert.equal(current?.model, 'second')
   assert.deepEqual(current?.triedModels, ['first', 'second'])
   assert.equal(current?.status, 'running')
@@ -433,8 +447,11 @@ test('a modeled stage starts its own process and falls back to the next model', 
 })
 
 test('a seeded stage runs on the model its reasoning level maps to', async () => {
-  const created: string[] = []
-  const sent: Sent[] = []
+  const launches: string[][] = []
+  main.setCliRunnerForTests(async (args) => {
+    launches.push(args)
+    return { result: { launch: { outcome: { handle: `modeled-${launches.length}` } } } }
+  })
   const host = mockHost({
     settings: { modelBootSeconds: 0 },
     storage: {
@@ -453,14 +470,6 @@ test('a seeded stage runs on the model its reasoning level maps to', async () =>
     },
     results: {
       'workspace.list': { workspaces: [workspace], truncated: false },
-      'terminal.create': ({ command }: { command?: string }) => {
-        created.push(command ?? '')
-        return { terminalId: `modeled-${created.length}` }
-      },
-      'terminal.sendText': ({ terminalId, text }: { terminalId: string; text: string }) => {
-        sent.push({ terminalId, text })
-        return { accepted: true }
-      },
       'terminal.read': { lines: [], truncated: false }
     }
   })
@@ -477,7 +486,9 @@ test('a seeded stage runs on the model its reasoning level maps to', async () =>
     task: 'check the app'
   })
   // The level's model and agent, not a hardcoded one.
-  assert.match(created[0] ?? '', /opencode --model 'opencode-go\/deepseek-v4\.1-flash'/)
+  const args = launches[0] ?? []
+  assert.equal(args[args.indexOf('--agent') + 1], 'opencode')
+  assert.equal(args[args.indexOf('--model') + 1], 'opencode-go/deepseek-v4.1-flash')
   assert.deepEqual(worker.refusals, [])
   await worker.deactivate()
 })

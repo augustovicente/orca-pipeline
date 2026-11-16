@@ -5,6 +5,10 @@
 // Runs are independent and may overlap, so nothing here is global to the plugin except the run
 // list, the pipelines and the settings. A save restarts the worker and drops in-memory state, so
 // the runs and the pipelines live in orca.storage.
+import { execFile } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import type { JsonValue } from 'orca/worker'
 import type { OrcaWorkerApi } from 'orca/worker'
 import { detectInstalledAgents } from './agent-detect'
@@ -57,6 +61,56 @@ const startups = new Map<string, ReturnType<typeof setTimeout>>()
 const sawWorking = new Map<string, boolean>()
 /** Runs paused because their worktree was not active: carrying on must re-send, not just wait. */
 const scopeBlocked = new Set<string>()
+
+/** Where the Orca CLI may live; the app bundle's bin is not on a GUI process's PATH. */
+function orcaCliCandidates(): string[] {
+  const fromEnv = process.env.ORCA_CLI_COMMAND
+  const absolute = [
+    '/Applications/Orca.app/Contents/Resources/bin/orca',
+    '/usr/local/bin/orca',
+    join(homedir(), '.local', 'bin', 'orca')
+  ].filter((candidate) => existsSync(candidate))
+  return [...(fromEnv ? [fromEnv] : []), 'orca', ...absolute]
+}
+
+type CliRunner = (args: string[]) => Promise<unknown>
+
+/** Tries each candidate in turn, so a GUI process without the app's bin on PATH still works. */
+const execCli: CliRunner = (args) =>
+  new Promise((resolve, reject) => {
+    const [first, ...rest] = orcaCliCandidates()
+    const attempt = (candidate: string, remaining: string[]): void => {
+      execFile(candidate, args, { maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => {
+        if (error) {
+          const next = remaining[0]
+          if (next !== undefined) {
+            attempt(next, remaining.slice(1))
+            return
+          }
+          reject(error)
+          return
+        }
+        try {
+          resolve(JSON.parse(stdout) as unknown)
+        } catch (parseError) {
+          reject(parseError)
+        }
+      })
+    }
+    attempt(first ?? 'orca', rest)
+  })
+
+/** Runs the Orca CLI; tests replace it through `setCliRunnerForTests`. */
+let runCli: CliRunner = execCli
+
+export function setCliRunnerForTests(runner: CliRunner): void {
+  runCli = runner
+}
+
+/** Puts the real CLI back, for a test that faked it. */
+export function resetCliRunnerForTests(): void {
+  runCli = execCli
+}
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -397,14 +451,16 @@ async function deliverStage(orca: OrcaWorkerApi, run: Run, index: number): Promi
 
     // Same model on a retry keeps its terminal; a new model gets a new process.
     if (run.terminalId === null || previousModel !== model) {
-      const created = await orca.host.call('terminal.create', {
-        workspaceId: run.workspaceId,
-        title: `${run.pipelineName} · ${model}`,
-        command: modeledCommand(binary, model)
-      })
-      run.terminalId = created.terminalId
+      const launched = await launchModeled(orca, run, index, agent, model, prompt)
+      run.terminalId = launched.terminalId
       await persist(orca)
-      if (modelBootSeconds > 0) await pause(modelBootSeconds * 1000)
+      if (!launched.promptSent) {
+        // The fallback path creates a bare terminal, so the prompt is typed once it boots.
+        if (modelBootSeconds > 0) await pause(modelBootSeconds * 1000)
+        await sendPrompt(orca, run, prompt)
+        armStartup(orca, run, index, false)
+      }
+      return
     }
 
     const sent = await orca.host.call('terminal.sendText', {
@@ -421,6 +477,66 @@ async function deliverStage(orca: OrcaWorkerApi, run: Run, index: number): Promi
       return
     }
     await failOrFallback(orca, run, index, message(error))
+  }
+}
+
+async function sendPrompt(orca: OrcaWorkerApi, run: Run, text: string): Promise<void> {
+  const sent = await orca.host.call('terminal.sendText', {
+    terminalId: run.terminalId as string,
+    text,
+    enter: true
+  })
+  if (!sent.accepted) throw new Error('The terminal did not accept the prompt.')
+}
+
+/**
+ * Starts an agent on a specific model. Orca's CLI is the only path that can hand a model to a TUI
+ * agent (the plugin host API cannot, and `opencode`'s TUI has no `--model` flag), so this shells
+ * out to it and takes the terminal handle it returns. `terminal.create` remains the fallback for a
+ * host where the CLI cannot run.
+ */
+async function launchModeled(
+  orca: OrcaWorkerApi,
+  run: Run,
+  index: number,
+  agent: string,
+  model: string,
+  prompt: string
+): Promise<{ terminalId: string; promptSent: boolean }> {
+  const selector = run.workspaceId.includes(':') ? run.workspaceId : `id:${run.workspaceId}`
+  try {
+    const answer = (await runCli([
+      'agent',
+      'launch',
+      '--agent',
+      agent,
+      '--worktree',
+      selector,
+      '--model',
+      model,
+      '--surface',
+      'terminal',
+      '--prompt',
+      prompt,
+      '--json'
+    ])) as {
+      result?: { launch?: { outcome?: { handle?: string } } }
+      launch?: { outcome?: { handle?: string } }
+    }
+    const handle = answer.result?.launch?.outcome?.handle ?? answer.launch?.outcome?.handle
+    if (!handle) throw new Error('no terminal handle in the launch answer')
+    return { terminalId: handle, promptSent: true }
+  } catch (error) {
+    orca.log(`modeled launch via CLI failed for ${run.id}: ${message(error)}`)
+    const binary = agentBinary(agent)
+    if (!binary) throw error
+    const created = await orca.host.call('terminal.create', {
+      workspaceId: run.workspaceId,
+      title: `${run.pipelineName} · ${model}`,
+      command: modeledCommand(binary, model)
+    })
+    armStartup(orca, run, index, false)
+    return { terminalId: created.terminalId, promptSent: false }
   }
 }
 
