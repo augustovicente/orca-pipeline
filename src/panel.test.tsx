@@ -32,6 +32,10 @@ const run: Run = {
   agent: 'claude',
   task: 'Ship it',
   terminalId: 'terminal-1',
+  model: null,
+  modelIndex: 0,
+  attempt: 0,
+  triedModels: [],
   stageIndex: 0,
   status: 'running',
   stages: [

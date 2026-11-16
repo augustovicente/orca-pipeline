@@ -327,7 +327,9 @@ function RunCard({ run }: { run: Run }) {
         ) : null}
 
         <Text size="xs" muted>
-          {`Started ${new Date(run.startedAt).toLocaleTimeString()} with ${run.agent}`}
+          {`Started ${new Date(run.startedAt).toLocaleTimeString()} with ${run.agent}${
+            run.model ? ` · ${run.model}` : ''
+          }${run.triedModels.length > 1 ? ` · tried ${run.triedModels.join(' → ')}` : ''}`}
         </Text>
       </Stack>
     </Collapsible>
@@ -538,6 +540,42 @@ function PipelinesTab() {
                   value={stage.prompt}
                   onChange={(value) => editStage(index, { prompt: value })}
                 />
+                <Input
+                  label="Model"
+                  placeholder="the agent's own default"
+                  value={stage.model ?? ''}
+                  onChange={(value) => editStage(index, { model: value })}
+                />
+                <Input
+                  label="Fallback models"
+                  placeholder="model-b, model-c"
+                  value={(stage.fallbacks ?? []).join(', ')}
+                  onChange={(value) =>
+                    editStage(index, {
+                      fallbacks: value
+                        .split(',')
+                        .map((model) => model.trim())
+                        .filter(Boolean)
+                    })
+                  }
+                />
+                <Input
+                  label="Tries per model"
+                  placeholder="2"
+                  value={stage.attempts === undefined ? '' : String(stage.attempts)}
+                  onChange={(value) => {
+                    const tries = Number(value.trim())
+                    editStage(index, {
+                      attempts:
+                        value.trim() === '' || !Number.isFinite(tries) ? undefined : tries
+                    })
+                  }}
+                />
+                <Text size="xs" muted>
+                  A stage with a model starts its own agent process with {'`--model`'}, so it does
+                  not share the previous stage&apos;s session. Failures move on to the next model
+                  after the tries it is given.
+                </Text>
                 <Row justify="end">
                   <IconButton
                     icon="delete"

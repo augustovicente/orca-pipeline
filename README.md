@@ -91,6 +91,21 @@ New pipelines, and the seeded ones, start with **your** agent rather than a hard
 `defaultAgent` setting when you set it, otherwise the agent running in your focused workspace, and
 claude only as a last resort.
 
+### Models per stage, with fallbacks
+
+Orca's plugin API cannot pass a model to `agent.launch` (its params are strict: `workspaceId`, `agent`,
+`prompt`), so a stage that names a model starts its own agent process instead, through
+`terminal.create` running `<binary> --model '<model>'`. Consequences worth knowing:
+
+- A modeled stage **does not share the previous stage's session** — it is a new process with the model
+  you asked for. Stages without a model keep the one session.
+- Each model gets **Tries per model** (default 2) attempts; then the stage moves to the next entry in
+  **Fallback models**, and only when that list is spent does the stage fail, reporting the models it tried.
+- The agent's binary must be one this plugin knows (the same table the picker uses). An unknown agent id
+  cannot start a modeled stage, and it says so.
+- Slow CLIs can be given more room with Settings → Pipeline → *Model boot wait* (default 8s), which is how
+  long a modeled agent gets before its prompt is typed.
+
 ### One worktree at a time can receive prompts
 
 Orca lets a plugin type only into the terminal of the **worktree the app has active**: `terminal.sendText`

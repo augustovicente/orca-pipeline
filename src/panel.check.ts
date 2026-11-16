@@ -14,6 +14,10 @@ function run(overrides: Partial<Run> & { id: string; pipelineId: string }): Run 
     agent: 'claude',
     task: 'Crash on empty input',
     terminalId: 'terminal-1',
+    model: null,
+    modelIndex: 0,
+    attempt: 0,
+    triedModels: [],
     stageIndex: 1,
     status: 'running',
     stages: [

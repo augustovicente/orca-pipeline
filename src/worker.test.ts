@@ -339,6 +339,71 @@ test('pauses, rather than fails, when Orca refuses input outside the active work
   await worker.deactivate()
 })
 
+test('a modeled stage starts its own process and falls back to the next model', async () => {
+  const created: string[] = []
+  const sent: Sent[] = []
+  const host = mockHost({
+    settings: { modelBootSeconds: 0 },
+    storage: {
+      pipelines: [
+        {
+          id: 'modeled',
+          name: 'Modeled',
+          agent: 'claude',
+          stages: [
+            {
+              id: 'only',
+              name: 'Only',
+              prompt: 'Do {{task}}',
+              model: 'first',
+              fallbacks: ['second'],
+              attempts: 1
+            }
+          ]
+        }
+      ]
+    },
+    results: {
+      'workspace.list': { workspaces: [workspace], truncated: false },
+      'terminal.create': ({ command }: { command?: string }) => {
+        created.push(command ?? '')
+        return { terminalId: `modeled-${created.length}` }
+      },
+      'terminal.sendText': ({ terminalId, text }: { terminalId: string; text: string }) => {
+        sent.push({ terminalId, text })
+        return { accepted: true }
+      },
+      'terminal.read': { lines: [], truncated: false }
+    }
+  })
+  const worker = await mountWorker(main, { host })
+
+  const { run } = await worker.request('run.start', {
+    pipelineId: 'modeled',
+    workspaceId: 'workspace-1',
+    task: 'review the app'
+  })
+  assert.match(created[0] ?? '', /claude --model 'first'/)
+  assert.deepEqual(sent.map((entry) => entry.terminalId), ['modeled-1'])
+  assert.equal(run.model, 'first')
+
+  // One failure is the whole allowance for that model, so the next one starts a new process.
+  await worker.emit('agent.status.changed', idle('modeled-1', 'working'))
+  await worker.emit('agent.status.changed', {
+    ...idle('modeled-1', 'done'),
+    mainAgent: { state: 'done', outcome: 'failure', stateStartedAt: 1 }
+  })
+
+  const state = await worker.request('run.state')
+  const current = state.runs[0]
+  assert.match(created[1] ?? '', /claude --model 'second'/)
+  assert.equal(current?.model, 'second')
+  assert.deepEqual(current?.triedModels, ['first', 'second'])
+  assert.equal(current?.status, 'running')
+  assert.deepEqual(worker.refusals, [])
+  await worker.deactivate()
+})
+
 test('saves and removes a pipeline', async () => {
   const host = hostFor([])
   const worker = await mountWorker(main, { host })

@@ -4,7 +4,17 @@ export type StageStatus = 'pending' | 'running' | 'done' | 'failed' | 'blocked' 
 export type RunStatus = 'running' | 'blocked' | 'failed' | 'done' | 'stopped'
 
 /** One step of a pipeline: a name and the prompt sent to the agent for it. */
-export type Stage = { id: string; name: string; prompt: string }
+export type Stage = {
+  id: string
+  name: string
+  prompt: string
+  /** Model for this stage. Set, the stage runs its own agent process with it. */
+  model?: string
+  /** Models to try, in order, after `model` gives up. */
+  fallbacks?: string[]
+  /** Tries per model before moving to the next one. Default 2. */
+  attempts?: number
+}
 
 /** A staged workflow: an ordered list of prompts run in one agent session. */
 export type Pipeline = { id: string; name: string; agent: string; stages: Stage[] }
@@ -30,6 +40,14 @@ export type Run = {
   agent: string
   task: string
   terminalId: string | null
+  /** The model the current stage is running with, when it models one. */
+  model: string | null
+  /** Position in the stage's model chain; advances only when a model gives up. */
+  modelIndex: number
+  /** Tries already spent on this stage's current model. */
+  attempt: number
+  /** Models this stage has already used, in order, for the report. */
+  triedModels: string[]
   stageIndex: number
   status: RunStatus
   stages: StageState[]

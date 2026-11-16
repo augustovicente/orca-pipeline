@@ -9,6 +9,7 @@ import type { JsonValue } from 'orca/worker'
 import type { OrcaWorkerApi } from 'orca/worker'
 import { detectInstalledAgents } from './agent-detect'
 import { DEFAULT_PIPELINES } from './defaults'
+import { agentBinary, attemptsPerModel, modelChain, modeledCommand } from './models'
 import type { Pipeline, Run, Stage, StageState, Workspace } from './protocol'
 
 const PIPELINES_KEY = 'pipelines'
@@ -27,6 +28,8 @@ const KEEP_FINISHED = 12
 let stageTimeoutMinutes = 20
 let notify = true
 let maxParallelRuns = 5
+/** How long a modeled agent gets to boot before its prompt is typed. */
+let modelBootSeconds = 8
 
 /** What a new pipeline, and the seeded ones, use. Orca keeps its own default agent in settings
  *  that plugins cannot read, so this is: the `defaultAgent` setting when set, else the agent
@@ -162,11 +165,11 @@ async function rescue(
   mayResend: boolean
 ): Promise<void> {
   if (!mayResend || !run.terminalId) {
-    await fail(
+    await failOrFallback(
       orca,
       run,
       index,
-      'The agent never reported working (no signal in about two minutes). Check that its CLI runs here, then Retry stage.'
+      'The agent never reported working (no signal in about two minutes).'
     )
     return
   }
@@ -207,7 +210,7 @@ async function rescue(
     await new Promise((resolve) => setTimeout(resolve, 15_000))
     if (sawWorking.get(run.id)) return
   }
-  await fail(orca, run, index, `The prompt could not be delivered to the agent terminal (${last}).`)
+  await failOrFallback(orca, run, index, `The prompt could not be delivered to the agent terminal (${last}).`)
 }
 
 function armTimer(orca: OrcaWorkerApi, run: Run, index: number): void {
@@ -215,7 +218,7 @@ function armTimer(orca: OrcaWorkerApi, run: Run, index: number): void {
   const minutes = Math.min(240, Math.max(1, stageTimeoutMinutes))
   const timer = setTimeout(() => {
     timers.delete(run.id)
-    void fail(orca, run, index, `No completion signal after ${minutes} min.`)
+    void failOrFallback(orca, run, index, `No completion signal after ${minutes} min.`)
   }, minutes * 60_000)
   const unrefable = timer as unknown as { unref?: () => void }
   unrefable.unref?.()
@@ -292,7 +295,6 @@ async function readTail(orca: OrcaWorkerApi, run: Run): Promise<string | null> {
 async function startStage(orca: OrcaWorkerApi, run: Run, index: number): Promise<void> {
   const stage = run.stages[index]
   if (!stage) return
-  const declared = pipelineOf(run.pipelineId)?.stages.find((entry) => entry.id === stage.stageId)
   run.stageIndex = index
   run.status = 'running'
   run.endedAt = null
@@ -305,41 +307,137 @@ async function startStage(orca: OrcaWorkerApi, run: Run, index: number): Promise
   scopeBlocked.delete(run.id)
   await persist(orca)
   armTimer(orca, run, index)
+  await deliverStage(orca, run, index)
+}
 
-  const prompt = promptFor(
-    declared ?? { id: stage.stageId, name: stage.stageId, prompt: '' },
-    index,
-    run.task
-  )
+/** Hands this stage's prompt to its agent: the shared session, or its own modeled process. */
+async function deliverStage(orca: OrcaWorkerApi, run: Run, index: number): Promise<void> {
+  const stage = run.stages[index]
+  if (!stage) return
+  const declared = pipelineOf(run.pipelineId)?.stages.find((entry) => entry.id === stage.stageId)
+  if (!declared) {
+    await fail(orca, run, index, 'That stage is no longer in its pipeline.')
+    return
+  }
+  const prompt = promptFor(declared, index, run.task)
+  const chain = modelChain(declared)
 
   try {
-    if (run.terminalId === null) {
-      const launched = await orca.host.call('agent.launch', {
-        workspaceId: run.workspaceId,
-        agent: run.agent,
-        prompt
-      })
-      run.terminalId = launched.terminalId
-      armStartup(orca, run, index, true)
-      await persist(orca)
-    } else {
-      const sent = await orca.host.call('terminal.sendText', {
-        terminalId: run.terminalId,
-        text: prompt,
-        enter: true
-      })
-      if (!sent.accepted) throw new Error('The terminal did not accept the prompt.')
-      // A prompt sent to a terminal whose agent is gone also never reports `working`.
-      armStartup(orca, run, index, false)
+    if (chain.length === 0) {
+      run.model = null
+      if (run.terminalId === null) {
+        const launched = await orca.host.call('agent.launch', {
+          workspaceId: run.workspaceId,
+          agent: run.agent,
+          prompt
+        })
+        run.terminalId = launched.terminalId
+        armStartup(orca, run, index, true)
+        await persist(orca)
+      } else {
+        const sent = await orca.host.call('terminal.sendText', {
+          terminalId: run.terminalId,
+          text: prompt,
+          enter: true
+        })
+        if (!sent.accepted) throw new Error('The terminal did not accept the prompt.')
+        // A prompt sent to a terminal whose agent is gone also never reports `working`.
+        armStartup(orca, run, index, false)
+      }
+      return
     }
+
+    // A modeled stage runs its own process: Orca's `agent.launch` cannot take a model.
+    const model = chain[Math.min(run.modelIndex, chain.length - 1)] ?? chain[0]!
+    const binary = agentBinary(run.agent)
+    if (!binary) {
+      await fail(
+        orca,
+        run,
+        index,
+        `No CLI is known for agent "${run.agent}", so this stage cannot start it with a model.`
+      )
+      return
+    }
+    const previousModel = run.model
+    run.model = model
+    if (run.triedModels[run.triedModels.length - 1] !== model) {
+      run.triedModels = [...run.triedModels, model]
+    }
+
+    // Same model on a retry keeps its terminal; a new model gets a new process.
+    if (run.terminalId === null || previousModel !== model) {
+      const created = await orca.host.call('terminal.create', {
+        workspaceId: run.workspaceId,
+        title: `${run.pipelineName} · ${model}`,
+        command: modeledCommand(binary, model)
+      })
+      run.terminalId = created.terminalId
+      await persist(orca)
+      if (modelBootSeconds > 0) await pause(modelBootSeconds * 1000)
+    }
+
+    const sent = await orca.host.call('terminal.sendText', {
+      terminalId: run.terminalId as string,
+      text: prompt,
+      enter: true
+    })
+    if (!sent.accepted) throw new Error('The terminal did not accept the prompt.')
+    armStartup(orca, run, index, false)
   } catch (error) {
     if (isScopeError(error)) {
       scopeBlocked.add(run.id)
       await block(orca, run, scopeNote(run))
       return
     }
-    await fail(orca, run, index, message(error))
+    await failOrFallback(orca, run, index, message(error))
   }
+}
+
+function pause(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms)
+    const unrefable = timer as unknown as { unref?: () => void }
+    unrefable.unref?.()
+  })
+}
+
+/**
+ * A stage that gives up may have another model to try: `attempts` tries per model, then the next
+ * model in the chain, and only when the chain is spent does the stage fail.
+ */
+async function failOrFallback(
+  orca: OrcaWorkerApi,
+  run: Run,
+  index: number,
+  reason: string
+): Promise<void> {
+  const stage = run.stages[index]
+  const declared = stage
+    ? pipelineOf(run.pipelineId)?.stages.find((entry) => entry.id === stage.stageId)
+    : undefined
+  const chain = declared ? modelChain(declared) : []
+  if (!declared || chain.length === 0) {
+    await fail(orca, run, index, reason)
+    return
+  }
+
+  run.attempt += 1
+  const perModel = attemptsPerModel(declared)
+  if (run.attempt < perModel) {
+    await persist(orca)
+    await startStage(orca, run, index)
+    return
+  }
+  if (run.modelIndex + 1 < chain.length) {
+    run.modelIndex += 1
+    run.attempt = 0
+    await persist(orca)
+    await startStage(orca, run, index)
+    return
+  }
+  const tried = run.triedModels.length > 0 ? run.triedModels.join(' → ') : chain.join(' → ')
+  await fail(orca, run, index, `${reason} Tried ${tried}.`)
 }
 
 async function finishStage(
@@ -363,6 +461,9 @@ async function finishStage(
     tell(orca, 'Pipeline complete', label(run))
     return
   }
+  run.modelIndex = 0
+  run.attempt = 0
+  run.triedModels = []
   await persist(orca)
   await startStage(orca, run, index + 1)
 }
@@ -428,7 +529,7 @@ async function onAgentStatus(
 
   const outcome = event.mainAgent?.outcome
   if (outcome === 'failure') {
-    await fail(orca, run, index, 'The agent reported a failed turn.')
+    await failOrFallback(orca, run, index, 'The agent reported a failed turn.')
     return
   }
   if (outcome === 'interruption' || outcome === 'cancellation' || outcome === 'superseded') {
@@ -535,6 +636,10 @@ async function readSettings(orca: OrcaWorkerApi): Promise<void> {
     if (typeof timeout === 'number' && Number.isFinite(timeout)) stageTimeoutMinutes = timeout
     const shouldNotify = await orca.settings.get('notify')
     if (typeof shouldNotify === 'boolean') notify = shouldNotify
+    const boot = await orca.settings.get('modelBootSeconds')
+    if (typeof boot === 'number' && Number.isFinite(boot)) {
+      modelBootSeconds = Math.min(60, Math.max(0, Math.round(boot)))
+    }
     const parallel = await orca.settings.get('maxParallelRuns')
     if (typeof parallel === 'number' && Number.isFinite(parallel)) {
       maxParallelRuns = Math.min(8, Math.max(1, Math.round(parallel)))
@@ -658,6 +763,10 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
       agent: pipeline.agent,
       task,
       terminalId: null,
+      model: null,
+      modelIndex: 0,
+      attempt: 0,
+      triedModels: [],
       stageIndex: 0,
       status: 'running',
       stages: pipeline.stages.map((stage) => ({
@@ -721,6 +830,9 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
     const run = runById(runId)
     if (!run) throw missing()
     if (run.status === 'running') throw conflict('That stage is still running.')
+    run.modelIndex = 0
+    run.attempt = 0
+    run.triedModels = []
     await startStage(orca, run, run.stageIndex)
     return { runs: plain(runs) }
   })
