@@ -140,7 +140,8 @@ nothing else. It has no network access of its own and keeps its data in Orca's p
 
 ## Settings and reasoning levels
 
-Everything lives under Settings → Pipeline:
+Everything is editable in the panel's own **Settings** tab — Settings → Plugins → Pipeline mirrors
+the same values for completeness:
 
 | Setting | Default | What it does |
 | --- | --- | --- |

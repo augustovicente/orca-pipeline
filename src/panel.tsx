@@ -21,7 +21,9 @@ import {
   Select,
   Separator,
   set,
+  settings,
   Stack,
+  Switch,
   Tab,
   Tabs,
   Text,
@@ -67,6 +69,65 @@ const tab = atom('tab', 'run')
 const editing = atom<Pipeline | null>(null)
 const notice = atom<string | null>(null)
 const busy = atom(false)
+/** The Settings tab's fields, as strings until saved. */
+const settingsDraft = atom<Record<string, string>>({})
+const settingsSaved = atom(false)
+
+const SETTING_KEYS = [
+  'highAgent',
+  'highModel',
+  'mediumAgent',
+  'mediumModel',
+  'lowAgent',
+  'lowModel',
+  'defaultAgent',
+  'maxParallelRuns',
+  'stageTimeoutMinutes',
+  'modelBootSeconds',
+  'notify'
+] as const
+
+const NUMBER_SETTINGS = new Set(['maxParallelRuns', 'stageTimeoutMinutes', 'modelBootSeconds'])
+
+function editSetting(key: string, value: string): void {
+  set(settingsDraft, { ...read(settingsDraft), [key]: value })
+  set(settingsSaved, false)
+}
+
+async function loadSettings(): Promise<void> {
+  const all = await settings.get()
+  const next: Record<string, string> = {}
+  for (const key of SETTING_KEYS) {
+    const value = all[key]
+    next[key] = value === undefined || value === null ? '' : String(value)
+  }
+  set(settingsDraft, next)
+}
+
+function saveSettings(): void {
+  void attempt(async () => {
+    const values = read(settingsDraft)
+    for (const key of SETTING_KEYS) {
+      const raw = (values[key] ?? '').trim()
+      if (key === 'notify') {
+        await settings.set(key, raw === 'true')
+      } else if (NUMBER_SETTINGS.has(key)) {
+        const parsed = Number(raw)
+        if (raw === '' || !Number.isFinite(parsed)) {
+          throw new Error(`${key} needs a number.`)
+        }
+        await settings.set(key, parsed)
+      } else {
+        await settings.set(key, raw)
+      }
+    }
+    const state = await plugin.request('run.state')
+    set(levels, state.levels)
+    set(defaultAgent, state.defaultAgent)
+    set(maxParallelRuns, state.maxParallelRuns)
+    set(settingsSaved, true)
+  })
+}
 
 const TONES: Record<StageStatus, Tone> = {
   pending: 'neutral',
@@ -227,7 +288,10 @@ export function setup(ctx: PanelContext): void {
   ctx.subscriptions.push(
     plugin.on('pipelines.changed', (payload) => set(pipelines, payload.pipelines))
   )
-  void attempt(refresh)
+  void attempt(async () => {
+    await refresh()
+    await loadSettings()
+  })
 }
 
 function stageIcon(status: StageStatus): IconName {
@@ -434,6 +498,64 @@ function RunTab() {
           ))}
         </Stack>
       )}
+    </Stack>
+  )
+}
+
+const LEVELS = [
+  { level: 'high', title: 'High reasoning' },
+  { level: 'medium', title: 'Medium reasoning' },
+  { level: 'low', title: 'Low reasoning' }
+] as const
+
+/** The nine settings, editable where the runs are, instead of a trip to Settings → Plugins. */
+function SettingsTab() {
+  const values = read(settingsDraft)
+  const field = (key: string, label: string, placeholder?: string) => (
+    <Input
+      label={label}
+      value={values[key] ?? ''}
+      placeholder={placeholder}
+      onChange={(value) => editSetting(key, value)}
+    />
+  )
+  return (
+    <Stack gap="md">
+      <Heading>Settings</Heading>
+      <Text size="xs" muted>
+        Each reasoning level names the agent and model a stage gets when it asks for that level.
+        A stage can still override either one.
+      </Text>
+      {LEVELS.map(({ level, title }) => (
+        <Stack gap="sm" key={level}>
+          <Text weight="medium">{title}</Text>
+          {field(`${level}Agent`, 'Agent', 'opencode')}
+          {field(`${level}Model`, 'Model', 'provider/model')}
+        </Stack>
+      ))}
+      <Separator />
+      {field('defaultAgent', 'Default agent', 'the agent in your focused workspace')}
+      {field('maxParallelRuns', 'Runs at a time (1–8)', '5')}
+      {field('stageTimeoutMinutes', 'Stage timeout (minutes)', '20')}
+      {field('modelBootSeconds', 'Model boot wait (seconds)', '8')}
+      <Switch
+        label="Desktop notifications"
+        checked={values.notify === 'true'}
+        onChange={(checked) => editSetting('notify', String(checked))}
+      />
+      <Row gap="xs" align="center">
+        <Button icon="check" onPress={saveSettings} disabled={read(busy)}>
+          Save settings
+        </Button>
+        <Button variant="ghost" icon="refresh" onPress={() => void attempt(loadSettings)}>
+          Reload
+        </Button>
+      </Row>
+      {settingsSaved ? (
+        <Callout tone="success" title="Saved">
+          <Text size="sm">The next stage uses these; a run already going keeps its current model.</Text>
+        </Callout>
+      ) : null}
     </Stack>
   )
 }
@@ -680,6 +802,9 @@ export default function Panel() {
         </Tab>
         <Tab value="pipelines" label="Pipelines" icon="layers">
           <PipelinesTab />
+        </Tab>
+        <Tab value="settings" label="Settings" icon="settings">
+          <SettingsTab />
         </Tab>
       </Tabs>
       {noticeText ? (

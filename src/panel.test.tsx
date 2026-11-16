@@ -48,6 +48,19 @@ const run: Run = {
 
 function hostWith(requests: Record<string, unknown>) {
   return mockHost({
+    settings: {
+      highAgent: 'opencode',
+      highModel: 'opencode-go/deepseek-v4.1-flash',
+      mediumAgent: 'opencode',
+      mediumModel: 'opencode/mimo-v2.6-flash-free',
+      lowAgent: 'opencode',
+      lowModel: 'opencode-go/beam-free',
+      defaultAgent: '',
+      maxParallelRuns: 5,
+      stageTimeoutMinutes: 20,
+      modelBootSeconds: 8,
+      notify: true
+    },
     results: {
       'workspace.readContext': { branch: 'main', displayName: 'demo', terminals: [] }
     },
@@ -207,6 +220,26 @@ test('lists a started run once, and opens its terminal from a stage', async () =
 
   await view.press({ label: '2. Build' })
   assert.ok(view.find({ text: /all good/ }))
+  assert.deepEqual(view.errors, [])
+  assert.deepEqual(view.refusals, [])
+  await view.unmount()
+})
+
+test('edits the reasoning levels from the panel itself', async () => {
+  const view = await mount(panel, { host: hostWith({}) })
+  await view.settled()
+
+  await view.select({ type: 'Tabs' }, 'settings')
+  assert.ok(view.find({ text: 'High reasoning' }))
+  assert.ok(view.find({ text: 'Low reasoning' }))
+
+  // The first "Model" field belongs to High.
+  await view.type({ label: 'Model' }, 'opencode-go/deepseek-v4-max', { replace: true })
+  await view.press({ role: 'button', text: 'Save settings' })
+
+  assert.equal(view.host.data().settings.highModel, 'opencode-go/deepseek-v4-max')
+  assert.equal(view.host.data().settings.maxParallelRuns, 5)
+  assert.ok(view.find({ text: /next stage uses these/ }))
   assert.deepEqual(view.errors, [])
   assert.deepEqual(view.refusals, [])
   await view.unmount()
