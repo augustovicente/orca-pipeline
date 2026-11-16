@@ -238,6 +238,8 @@ async function startStage(orca: OrcaWorkerApi, run: Run, index: number): Promise
         enter: true
       })
       if (!sent.accepted) throw new Error('The terminal did not accept the prompt.')
+      // A prompt sent to a terminal whose agent is gone also never reports `working`.
+      armStartup(orca, run, index)
     }
   } catch (error) {
     await fail(orca, run, index, message(error))
@@ -599,6 +601,8 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
     sawWorking.set(run.id, false)
     await persist(orca)
     armTimer(orca, run, run.stageIndex)
+    // If this run never showed signs of life, hold the terminal to the same two-minute standard.
+    if (!sawWorking.get(run.id)) armStartup(orca, run, run.stageIndex)
     return { runs: plain(runs) }
   })
 
