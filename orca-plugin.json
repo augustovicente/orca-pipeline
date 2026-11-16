@@ -51,6 +51,12 @@
         "description": "Show a notification when a run finishes, fails or needs you.",
         "type": "boolean",
         "default": true
+      },
+      {
+        "key": "defaultAgent",
+        "title": "Default agent",
+        "description": "Agent for new pipelines and the seeded ones. Leave empty to use the agent running in your focused workspace, then claude.",
+        "type": "string"
       }
     ]
   },

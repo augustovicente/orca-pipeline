@@ -150,6 +150,71 @@ test('adds a new seeded pipeline to storage that predates it, once', async () =>
   await worker.deactivate()
 })
 
+test('new pipelines and the seeds use the agent running in the focused workspace', async () => {
+  const host = mockHost({
+    results: {
+      'agents.list': {
+        agents: [
+          {
+            terminalId: 't1',
+            title: 'Codex',
+            agent: 'codex',
+            state: 'working',
+            stateStartedAt: 0
+          }
+        ]
+      }
+    }
+  })
+  const worker = await mountWorker(main, { host })
+  const state = await worker.request('run.state')
+  assert.equal(state.defaultAgent, 'codex')
+  assert.ok(state.pipelines.every((pipeline) => pipeline.agent === 'codex'))
+  await worker.deactivate()
+})
+
+test('the default agent setting wins, and adopted seeds stay edited', async () => {
+  const host = mockHost({
+    settings: { defaultAgent: 'gemini' },
+    results: {
+      'agents.list': {
+        agents: [
+          { terminalId: 't1', title: 'Codex', agent: 'codex', state: 'working', stateStartedAt: 0 }
+        ]
+      }
+    },
+    storage: {
+      pipelines: [
+        {
+          id: 'feature',
+          name: 'Feature',
+          agent: 'claude',
+          stages: [{ id: 'plan', name: 'Plan', prompt: 'Plan' }]
+        }
+      ]
+    }
+  })
+  const worker = await mountWorker(main, { host })
+  const adopted = await worker.request('pipelines.list')
+  assert.equal(adopted.pipelines.find((p) => p.id === 'feature')?.agent, 'gemini')
+
+  // A later change to a pipeline's agent is not undone by the one-shot adoption.
+  await worker.request('pipelines.save', {
+    pipeline: {
+      id: 'feature',
+      name: 'Feature',
+      agent: 'opencode',
+      stages: [{ id: 'plan', name: 'Plan', prompt: 'Plan' }]
+    }
+  })
+  await worker.deactivate()
+
+  const again = await mountWorker(main, { host })
+  const kept = await again.request('pipelines.list')
+  assert.equal(kept.pipelines.find((p) => p.id === 'feature')?.agent, 'opencode')
+  await again.deactivate()
+})
+
 test('saves and removes a pipeline', async () => {
   const host = hostFor([])
   const worker = await mountWorker(main, { host })

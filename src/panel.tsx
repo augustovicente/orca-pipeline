@@ -66,6 +66,7 @@ const workspaces = atom<Workspace[]>([])
 const selectedPipeline = atom('selectedPipeline', '', { persist: 'plugin' })
 const selectedWorkspace = atom('selectedWorkspace', '', { persist: 'plugin' })
 const agentPicker = atom(false)
+const defaultAgent = atom('claude')
 const task = atom('task', '')
 const tab = atom('tab', 'run')
 const editing = atom<Pipeline | null>(null)
@@ -101,6 +102,7 @@ async function refresh(): Promise<void> {
   const state = await plugin.request('run.state')
   set(pipelines, state.pipelines)
   set(run, state.run)
+  set(defaultAgent, state.defaultAgent)
   const listed = await plugin.request('workspaces.list')
   set(workspaces, listed.workspaces)
   if (read(selectedPipeline) === '' && state.pipelines[0]) {
@@ -150,7 +152,7 @@ function newPipeline(): void {
   set(editing, {
     id: `pipeline-${Date.now()}`,
     name: 'New pipeline',
-    agent: 'claude',
+    agent: read(defaultAgent) || 'claude',
     stages: [{ id: `stage-${Date.now()}`, name: 'Plan', prompt: '' }]
   })
 }

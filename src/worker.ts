@@ -12,12 +12,20 @@ import type { Pipeline, Run, Stage, StageState, Workspace } from './protocol'
 const PIPELINES_KEY = 'pipelines'
 /** Ids of the seeded pipelines this plugin has already offered, so a deleted seed stays deleted. */
 const SEEDED_KEY = 'seeded'
+/** Set once the seeded flows have picked up the resolved default agent. */
+const AGENT_SEEDS_KEY = 'seedAgentMigrated'
 const RUN_KEY = 'run'
 const STATUS_BAR_ID = 'run'
 
 /** Cached settings: the worker re-reads them when the person changes one. */
 let stageTimeoutMinutes = 20
 let notify = true
+/**
+ * What a new pipeline, and the seeded ones, use. Orca keeps its own default agent in settings
+ * that plugins cannot read, so this is: the `defaultAgent` setting when set, else the agent
+ * running in the focused workspace, else claude.
+ */
+let defaultAgent = 'claude'
 
 let pipelines: Pipeline[] = []
 let run: Run | null = null
@@ -280,7 +288,7 @@ async function storedPipelines(orca: OrcaWorkerApi): Promise<Pipeline[]> {
       offered.add(seed.id)
       continue
     }
-    next = [...next, plain(seed)]
+    next = [...next, { ...plain(seed), agent: defaultAgent }]
     offered.add(seed.id)
   }
 
@@ -308,6 +316,21 @@ async function storedRun(orca: OrcaWorkerApi): Promise<Run | null> {
   return restored
 }
 
+/** One-shot: an install whose seeded flows still say `claude` adopts the resolved default. */
+async function adoptDefaultAgent(orca: OrcaWorkerApi, list: Pipeline[]): Promise<Pipeline[]> {
+  if ((await orca.storage.get(AGENT_SEEDS_KEY)) === true) return list
+  const seedIds = new Set(DEFAULT_PIPELINES.map((seed) => seed.id))
+  const next = list.map((entry) =>
+    seedIds.has(entry.id) && entry.agent === 'claude' && defaultAgent !== 'claude'
+      ? { ...entry, agent: defaultAgent }
+      : entry
+  )
+  const changed = next.some((entry, at) => entry.agent !== list[at]?.agent)
+  if (changed) await orca.storage.set(PIPELINES_KEY, asJson(next))
+  await orca.storage.set(AGENT_SEEDS_KEY, true)
+  return next
+}
+
 async function readSettings(orca: OrcaWorkerApi): Promise<void> {
   try {
     const timeout = await orca.settings.get('stageTimeoutMinutes')
@@ -317,6 +340,32 @@ async function readSettings(orca: OrcaWorkerApi): Promise<void> {
   } catch {
     // Settings are optional; the defaults above apply.
   }
+  defaultAgent = await resolveDefaultAgent(orca)
+}
+
+/**
+ * The agent to put on new pipelines. A pinned agent wins; otherwise the agent working in the
+ * focused workspace is the best available signal, since Orca does not expose its own default.
+ */
+async function resolveDefaultAgent(orca: OrcaWorkerApi): Promise<string> {
+  try {
+    const pinned = await orca.settings.get('defaultAgent')
+    if (typeof pinned === 'string' && pinned.trim()) return pinned.trim()
+  } catch {
+    // Fall through to the running agent.
+  }
+  try {
+    const listed = await orca.host.call('agents.list')
+    const agents = (listed?.agents ?? []).filter((entry) => entry.agent)
+    const active =
+      agents.find((entry) => entry.state === 'working') ??
+      agents.find((entry) => entry.state === 'waiting') ??
+      agents[0]
+    if (active?.agent) return active.agent
+  } catch {
+    // No focused workspace, or no agent in it yet.
+  }
+  return 'claude'
 }
 
 function conflict(text: string): Error {
@@ -324,9 +373,9 @@ function conflict(text: string): Error {
 }
 
 export default async function activate(orca: OrcaWorkerApi): Promise<void> {
-  pipelines = await storedPipelines(orca)
-  run = await storedRun(orca)
   await readSettings(orca)
+  pipelines = await adoptDefaultAgent(orca, await storedPipelines(orca))
+  run = await storedRun(orca)
   setStatusBar(orca)
 
   orca.settings.onDidChange(() => void readSettings(orca))
@@ -378,7 +427,8 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
 
   orca.panels.handle('run.state', () => ({
     run: run === null ? null : plain(run),
-    pipelines: plain(pipelines)
+    pipelines: plain(pipelines),
+    defaultAgent
   }))
 
   orca.panels.handle('run.start', async ({ pipelineId, workspaceId, task }) => {

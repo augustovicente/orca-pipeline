@@ -57,8 +57,8 @@ declare module 'orca' {
     'pipelines.remove': { input: { id: string }; output: { pipelines: Pipeline[] } }
     /** Every workspace Orca knows on this host. */
     'workspaces.list': { output: { workspaces: Workspace[] } }
-    /** The current run, if there is one, plus the pipelines. */
-    'run.state': { output: { run: Run | null; pipelines: Pipeline[] } }
+    /** The current run, if there is one, plus the pipelines and the agent new ones start with. */
+    'run.state': { output: { run: Run | null; pipelines: Pipeline[]; defaultAgent: string } }
     /** Starts a pipeline in a workspace; the first stage launches the agent. */
     'run.start': {
       input: { pipelineId: string; workspaceId: string; task: string }

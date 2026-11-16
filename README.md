@@ -75,6 +75,10 @@ The **QA (e2e)** flow assumes the agent can drive the app the way a person does:
 embedded browser (`orca tab create`, `snapshot`, `click`, `fill`), reads what is on screen, and
 closes its tabs at the end. That is what makes the report evidence rather than opinion.
 
+New pipelines, and the seeded ones, start with **your** agent rather than a hardcoded one: the
+`defaultAgent` setting when you set it, otherwise the agent running in your focused workspace, and
+claude only as a last resort.
+
 ## Requirements
 
 - Orca `>= 1.4.248` (components panels, status bar items).
