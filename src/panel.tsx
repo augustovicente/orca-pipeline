@@ -502,6 +502,19 @@ function RunTab() {
   )
 }
 
+export function reasoningOptions(current: Record<Reasoning, { agent: string; model: string }>) {
+  const one = (level: Reasoning, title: string) => ({
+    value: level,
+    label: `${title} — ${current[level].model || 'no model set'}`
+  })
+  return [
+    { value: '', label: 'Inherit — the pipeline’s level, then the agent default' },
+    one('high', 'High'),
+    one('medium', 'Medium'),
+    one('low', 'Low')
+  ]
+}
+
 const LEVELS = [
   { level: 'high', title: 'High reasoning' },
   { level: 'medium', title: 'Medium reasoning' },
@@ -653,12 +666,7 @@ function PipelinesTab() {
           <Select
             label="Reasoning for its stages"
             value={draft.reasoning ?? ''}
-            options={[
-              { value: '', label: 'As each stage says' },
-              { value: 'high', label: 'High' },
-              { value: 'medium', label: 'Medium' },
-              { value: 'low', label: 'Low' }
-            ]}
+            options={reasoningOptions(read(levels))}
             onChange={(value) =>
               set(editing, {
                 ...draft,
@@ -696,12 +704,7 @@ function PipelinesTab() {
                 <Select
                   label="Reasoning"
                   value={stage.reasoning ?? ''}
-                  options={[
-                    { value: '', label: 'The pipeline’s, or the agent default' },
-                    { value: 'high', label: 'High' },
-                    { value: 'medium', label: 'Medium' },
-                    { value: 'low', label: 'Low' }
-                  ]}
+                  options={reasoningOptions(read(levels))}
                   onChange={(value) =>
                     editStage(index, {
                       reasoning: value === '' ? undefined : (value as Reasoning)
@@ -709,13 +712,7 @@ function PipelinesTab() {
                   }
                 />
                 <Text size="xs" muted>
-                  {`high → ${read(levels).high.model || '—'}${
-                    read(levels).high.agent ? ` on ${read(levels).high.agent}` : ''
-                  } · medium → ${read(levels).medium.model || '—'}${
-                    read(levels).medium.agent ? ` on ${read(levels).medium.agent}` : ''
-                  } · low → ${read(levels).low.model || '—'}${
-                    read(levels).low.agent ? ` on ${read(levels).low.agent}` : ''
-                  }`}
+                  Levels and the agent behind each one live in the Settings tab.
                 </Text>
                 <Input
                   label="Agent override"

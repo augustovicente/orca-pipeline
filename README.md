@@ -160,6 +160,10 @@ Model ids are the provider-qualified ones your agent uses — `opencode models` 
 
 ### How a stage picks its agent and model
 
+The two pickers (one per pipeline, one per stage) list each level with the model it currently maps
+to, so the choice reads as *High — opencode-go/deepseek-v4.1-flash* rather than a bare word. Change
+the mapping once in the Settings tab and both pickers follow.
+
 A pipeline sets a default level for its stages, a stage can set its own, and an explicit agent or
 model always wins over a level:
 

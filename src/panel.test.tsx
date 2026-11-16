@@ -245,6 +245,21 @@ test('edits the reasoning levels from the panel itself', async () => {
   await view.unmount()
 })
 
+test('the reasoning picker names the model each level maps to', () => {
+  const options = panel.reasoningOptions({
+    high: { agent: 'opencode', model: 'opencode-go/deepseek-v4.1-flash' },
+    medium: { agent: 'opencode', model: 'opencode/mimo-v2.6-flash-free' },
+    low: { agent: 'opencode', model: 'opencode-go/beam-free' }
+  })
+  assert.deepEqual(
+    options.map((option) => option.value),
+    ['', 'high', 'medium', 'low']
+  )
+  assert.match(options[1]?.label ?? '', /High — opencode-go\/deepseek-v4\.1-flash/)
+  assert.match(options[2]?.label ?? '', /Medium — opencode\/mimo-v2\.6-flash-free/)
+  assert.match(options[3]?.label ?? '', /Low — opencode-go\/beam-free/)
+})
+
 test('saves an edited pipeline', async () => {
   const saved: unknown[] = []
   const view = await mount(panel, {
