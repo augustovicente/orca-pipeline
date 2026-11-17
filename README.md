@@ -4,8 +4,6 @@ Staged workflows for coding agents, inside [Orca](https://github.com/stablyai/or
 test and review chained in **one agent session**, so each stage sees everything the stages before
 it did.
 
-![The Pipeline panel in Orca's sidebar](assets/panel.png)
-
 Orca already runs one prompt at a time. This plugin adds the pipeline around it — a fixed order of
 stages, each with its own prompt, driven by the agent's own completion signal.
 
@@ -34,7 +32,9 @@ your review flow.
 The three QA reviews share a shape — scope, then prepare, then a real end-to-end walkthrough, then
 a report file — and differ in the lens: `ux-review.md`, `qa-report.md` and `product-review.md`.
 
-Every flow is just prompts — edit them in the panel, or add your own.
+Every flow is just prompts — edit them in the panel, or add your own. A flow can belong to one
+repo, so a set of checks that only makes sense in that product stays out of the way everywhere
+else.
 
 ## From a prompt or a phone
 
@@ -75,10 +75,22 @@ have is a prompt.
   after you answer it in the terminal; *Retry stage* and *Skip stage* are there when a stage goes
   wrong.
 - **Shows where you are.** Every stage is a clickable row: press one to read that run's terminal,
-  live while the stage runs, with the tail kept from when it finished. The status bar shows how many
+  while the stage runs, with the tail kept from when it finished. The status bar shows how many
   runs are alive and how many need you.
 - **Edits pipelines in the panel.** Name, agent and stages per pipeline; `{{task}}` in a prompt is
-  replaced by the task you typed.
+  replaced by the task you typed. Reorder stages with *Up* / *Down*, duplicate a pipeline, and pick
+  an agent from the ones installed on this machine.
+- **Keeps per-repo pipelines.** *Applies to* sets a pipeline to one Orca project: it is offered only
+  where that project's workspace is selected, so a repo's checks and review lenses do not clutter
+  another product. Leave it on *Every workspace* for the flows you use everywhere.
+- **Puts the output one click away.** A run card shows *Open terminal*, which brings its agent
+  terminal to the front in Orca, and — once Orca reported the agent session — *New tab*, which
+  resumes that same conversation in a tab of its own. Pressing any stage still opens the terminal
+  tail inline, refreshed whenever you ask, with the last one kept for finished runs.
+- **Refreshes when you ask.** *Refresh* on the Run and Pipelines tabs re-reads workspaces, projects
+  and pipelines; a workspace opened or closed elsewhere in Orca refreshes the list too.
+- **Groups runs by life stage.** Live runs stay open with their current stage and progress; finished
+  runs collapse into *Finished*, ready to reopen, retry or remove.
 
 Those six ship on first run and are yours to edit. A pipeline you delete stays deleted; a new
 default added by a later version is appended once, without touching the ones you changed.
@@ -102,6 +114,23 @@ refuses to start a run in a workspace Orca is not showing, and a run that loses 
 **pauses** with "Open <workspace> in Orca so the pipeline may type into its agent" — press *Carry on*
 once it is back in front, and the prompt is sent again. Parallel runs work because they share that
 worktree.
+
+### Pipelines for one repo
+
+*Applies to* in the pipeline editor scopes a flow to one Orca project. The Run tab then lists it
+only while a workspace of that project is selected, so per-product checks stay out of the way
+elsewhere; the same select offers *Every workspace* for flows that travel. Scoping needs Orca's
+project ids, which `workspace.list` and `project.list` provide on current builds; without them the
+plugin falls back to the project name. The worker enforces the scope too: starting a repo flow in
+another repo's workspace is refused with the repo it belongs to, rather than running next door.
+
+### Where the output lives
+
+Every run keeps the agent terminal it launched. *Open terminal* focuses that terminal in Orca
+through `terminal.focus`; when Orca reported the conversation's `sessionId`, *New tab* resumes the
+same session through `agent.resume`, without disturbing the run. Older Orca builds that lack either
+method keep the inline terminal view, which reads `terminal.read` and falls back to the tail each
+stage saved.
 
 ## Requirements
 
@@ -134,9 +163,12 @@ orca plugin dev watch .   # loads it, streams logs and reloads; Ctrl-C unloads
 ## Permissions
 
 The plugin is a trusted worker: it runs in its own Node process with your account's access. It
-asks for exactly what a pipeline needs — `workspace:read`, `agent:read`, `agent:launch`,
+asks for exactly what a pipeline needs — `workspace:read`, `workspace:write` (to bring a run's
+terminal to the front and open the session in a tab), `agent:read`, `agent:launch`,
 `terminal:send`, `terminal:read`, `notifications:show`, `storage:own`, `settings:own` — and
 nothing else. It has no network access of its own and keeps its data in Orca's plugin storage.
+Updating to a version that asks for more (this one adds `workspace:write` to focus a run's terminal)
+makes Orca ask for your approval again.
 
 ## Settings and reasoning levels
 
@@ -210,6 +242,8 @@ pipeline without the second runtime.
   own timeout (default 20 min) so a silent agent fails its stage instead of holding a slot.
 - `src/panel.tsx` is a components panel: it renders Orca's own controls and talks to the worker
   through `plugin.request` / `orca.panels.post`.
+- `src/scope.ts` decides which pipelines a workspace may see: a pipeline with no project applies
+  everywhere, one with a project only in that project's workspaces.
 - `src/protocol.ts` declares both directions once, so panel and worker are typed end to end.
 - `src/agent-choices.ts` maps each agent to the CLI Orca detects it by, so the picker offers only
   what is installed; `src/agent-detect.ts` does the scan.

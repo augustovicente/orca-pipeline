@@ -18,9 +18,19 @@ const workspace = {
   kind: 'worktree' as const,
   name: 'demo',
   project: 'demo',
+  projectId: 'project-demo',
   path: '/tmp/demo',
   branch: 'main',
   hostId: null
+}
+
+const otherWorkspace = {
+  ...workspace,
+  id: 'workspace-2',
+  name: 'other',
+  project: 'other',
+  projectId: 'project-other',
+  path: '/tmp/other'
 }
 
 const run: Run = {
@@ -32,6 +42,7 @@ const run: Run = {
   agent: 'claude',
   task: 'Ship it',
   terminalId: 'terminal-1',
+  sessionId: 'session-1',
   model: null,
   modelIndex: 0,
   attempt: 0,
@@ -68,6 +79,7 @@ function hostWith(requests: Record<string, unknown>) {
       'run.state': {
         runs: [],
         pipelines: [pipeline],
+        projects: [{ id: 'project-demo', name: 'demo', path: '/tmp/demo', hostId: null }],
         defaultAgent: 'claude',
         availableAgents: ['claude', 'codex', 'opencode'],
         maxParallelRuns: 5,
@@ -292,5 +304,152 @@ test('saves an edited pipeline', async () => {
 
   assert.equal(saved.length, 1)
   assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('offers the pipelines of this repo and the ones for every workspace only', async () => {
+  const scoped = (id: string, projectId: string, projectName: string): Pipeline => ({
+    ...pipeline,
+    id,
+    name: id,
+    projectId,
+    projectName
+  })
+  const view = await mount(panel, {
+    host: hostWith({
+      'run.state': {
+        runs: [],
+        pipelines: [
+          pipeline,
+          scoped('demo-only', 'project-demo', 'demo'),
+          scoped('other-only', 'project-other', 'other')
+        ],
+        projects: [
+          { id: 'project-demo', name: 'demo', path: '/tmp/demo', hostId: null },
+          { id: 'project-other', name: 'other', path: '/tmp/other', hostId: null }
+        ],
+        defaultAgent: 'claude',
+        availableAgents: ['claude'],
+        maxParallelRuns: 5,
+        levels: {
+          high: { agent: 'opencode', model: 'opencode-go/deepseek-v4.1-flash' },
+          medium: { agent: 'opencode', model: 'opencode/mimo-v2.6-flash-free' },
+          low: { agent: 'opencode', model: 'opencode-go/beam-free' }
+        }
+      },
+      'workspaces.list': { workspaces: [workspace, otherWorkspace] }
+    })
+  })
+  await view.settled()
+
+  const values = () =>
+    ((view.find({ label: 'Pipeline' })?.props.options ?? []) as { value: string }[]).map(
+      (option) => option.value
+    )
+  assert.deepEqual(values(), ['feature', 'demo-only'])
+
+  await view.select({ label: 'Workspace' }, 'workspace-2')
+  assert.deepEqual(values(), ['feature', 'other-only'])
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('refreshes workspaces and pipelines from the Run tab', async () => {
+  const laterWorkspace = { ...otherWorkspace, id: 'workspace-3', name: 'later', projectId: 'later' }
+  const laterPipeline: Pipeline = {
+    ...pipeline,
+    id: 'later-flow',
+    name: 'Later flow',
+    projectId: 'later',
+    projectName: 'later'
+  }
+  let spaces = [workspace]
+  let state = {
+    runs: [],
+    pipelines: [pipeline],
+    projects: [{ id: 'project-demo', name: 'demo', path: '/tmp/demo', hostId: null }],
+    defaultAgent: 'claude',
+    availableAgents: ['claude'],
+    maxParallelRuns: 5,
+    levels: {
+      high: { agent: 'opencode', model: 'opencode-go/deepseek-v4.1-flash' },
+      medium: { agent: 'opencode', model: 'opencode/mimo-v2.6-flash-free' },
+      low: { agent: 'opencode', model: 'opencode-go/beam-free' }
+    }
+  }
+  const view = await mount(panel, {
+    host: hostWith({
+      'workspaces.list': () => ({ workspaces: spaces }),
+      'run.state': () => state
+    })
+  })
+  await view.settled()
+
+  spaces = [workspace, laterWorkspace]
+  state = {
+    ...state,
+    pipelines: [pipeline, laterPipeline],
+    projects: [{ id: 'later', name: 'later', path: '/tmp/later', hostId: null }]
+  }
+  await view.press({ role: 'button', text: 'Refresh' })
+  await view.settled()
+
+  const workspaces = (view.find({ label: 'Workspace' })?.props.options ?? []) as {
+    value: string
+  }[]
+  assert.ok(workspaces.some((option) => option.value === 'workspace-3'))
+  // The new flow belongs to another repo, so this workspace's picker keeps the global one.
+  const values = ((view.find({ label: 'Pipeline' })?.props.options ?? []) as { value: string }[]).map(
+    (option) => option.value
+  )
+  assert.deepEqual(values, ['feature'])
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('opens a run terminal and its session from the run card', async () => {
+  const opens: unknown[] = []
+  const sessions: unknown[] = []
+  const view = await mount(panel, {
+    host: hostWith({
+      'run.open': (input: unknown) => (opens.push(input), { opened: 'terminal' as const }),
+      'run.openSession': (input: unknown) => (
+        sessions.push(input), { terminalId: 'terminal-2', started: true }
+      )
+    })
+  })
+  await view.settled()
+  await view.post('runs.changed', { runs: [run] })
+
+  await view.press({ role: 'button', text: 'Open terminal' })
+  assert.deepEqual(opens, [{ runId: 'run-1' }])
+
+  await view.press({ role: 'button', text: 'New tab' })
+  assert.deepEqual(sessions, [{ runId: 'run-1' }])
+  assert.ok(view.find({ text: /open in its own tab/ }))
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('scopes a pipeline to the selected repo', async () => {
+  const saved: { pipeline: Pipeline }[] = []
+  const view = await mount(panel, {
+    host: hostWith({
+      'pipelines.save': (input: { pipeline: Pipeline }) => (
+        saved.push(input), { pipelines: [input.pipeline] }
+      )
+    })
+  })
+  await view.settled()
+
+  await view.select({ type: 'Tabs' }, 'pipelines')
+  await view.press({ role: 'button', text: 'New' })
+  await view.select({ label: 'Applies to' }, 'project-demo')
+  await view.press({ role: 'button', text: 'Save' })
+
+  assert.equal(saved[0]?.pipeline.projectId, 'project-demo')
+  assert.equal(saved[0]?.pipeline.projectName, 'demo')
+  assert.deepEqual(view.errors, [])
+  assert.deepEqual(view.refusals, [])
   await view.unmount()
 })

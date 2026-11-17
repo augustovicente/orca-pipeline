@@ -14,6 +14,7 @@ function run(overrides: Partial<Run> & { id: string; pipelineId: string }): Run 
     agent: 'claude',
     task: 'Crash on empty input',
     terminalId: 'terminal-1',
+    sessionId: 'session-1',
     model: null,
     modelIndex: 0,
     attempt: 0,
@@ -45,10 +46,19 @@ const workspaceList = {
       kind: 'worktree',
       name: 'demo',
       project: 'demo',
+      projectId: 'project-demo',
       path: '/tmp/demo',
       branch: 'main',
       hostId: null
     }
+  ],
+  truncated: false
+}
+
+const projects = {
+  projects: [
+    { id: 'project-demo', name: 'demo', path: '/tmp/demo', hostId: null },
+    { id: 'project-other', name: 'other', path: '/tmp/other', hostId: null }
   ],
   truncated: false
 }
@@ -59,7 +69,8 @@ export default defineCheck({
     storage: { runs: [run({ id: 'run-1', pipelineId: 'bugfix' })] },
     results: {
       'workspace.readContext': { branch: 'main', displayName: 'demo', terminals: [] },
-      'workspace.list': workspaceList
+      'workspace.list': workspaceList,
+      'project.list': projects
     }
   },
   'two in parallel': {
@@ -71,7 +82,8 @@ export default defineCheck({
     },
     results: {
       'workspace.readContext': { branch: 'main', displayName: 'demo', terminals: [] },
-      'workspace.list': workspaceList
+      'workspace.list': workspaceList,
+      'project.list': projects
     }
   },
   'pipeline editor': {
@@ -80,19 +92,50 @@ export default defineCheck({
     storage: { runs: [] },
     results: {
       'workspace.readContext': { branch: 'main', displayName: 'demo', terminals: [] },
-      'workspace.list': workspaceList
+      'workspace.list': workspaceList,
+      'project.list': projects
     }
   },
   'settings tab': {
     persisted: { plugin: { tab: 'settings' } },
     storage: { runs: [] }
   },
+  'repo pipelines': {
+    persisted: { plugin: { tab: 'pipelines', selectedPipeline: 'demo-checks' } },
+    storage: {
+      runs: [],
+      pipelines: [
+        {
+          id: 'demo-checks',
+          name: 'Demo checks',
+          agent: 'claude',
+          projectId: 'project-demo',
+          projectName: 'demo',
+          stages: [{ id: 'only', name: 'Only', prompt: 'Check {{task}}' }]
+        },
+        {
+          id: 'other-checks',
+          name: 'Other checks',
+          agent: 'claude',
+          projectId: 'project-other',
+          projectName: 'other',
+          stages: [{ id: 'only', name: 'Only', prompt: 'Check {{task}}' }]
+        }
+      ]
+    },
+    results: {
+      'workspace.readContext': { branch: 'main', displayName: 'demo', terminals: [] },
+      'workspace.list': workspaceList,
+      'project.list': projects
+    }
+  },
   'one run a time': {
     settings: { maxParallelRuns: 1 },
     storage: { runs: [run({ id: 'run-1', pipelineId: 'bugfix' })] },
     results: {
       'workspace.readContext': { branch: 'main', displayName: 'demo', terminals: [] },
-      'workspace.list': workspaceList
+      'workspace.list': workspaceList,
+      'project.list': projects
     }
   }
 })

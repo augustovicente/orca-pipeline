@@ -17,6 +17,7 @@ const workspace = {
   kind: 'worktree' as const,
   name: 'demo',
   project: 'demo',
+  projectId: 'project-demo',
   path: '/tmp/demo',
   branch: 'pipeline-test',
   hostId: null
@@ -512,6 +513,98 @@ test('saves and removes a pipeline', async () => {
     removed.pipelines.some((pipeline) => pipeline.id === 'custom'),
     false
   )
+  assert.deepEqual(worker.refusals, [])
+  await worker.deactivate()
+})
+
+test('keeps the project a pipeline is scoped to, and refuses to run it next door', async () => {
+  const other = {
+    ...workspace,
+    id: 'workspace-2',
+    name: 'other',
+    project: 'other',
+    projectId: 'project-other'
+  }
+  const host = mockHost({
+    results: {
+      'workspace.list': { workspaces: [workspace, other], truncated: false }
+    },
+    storage: {
+      pipelines: [
+        {
+          id: 'demo-flow',
+          name: 'Demo flow',
+          agent: 'claude',
+          projectId: 'project-demo',
+          projectName: 'demo',
+          stages: [{ id: 'only', name: 'Only', prompt: 'Do {{task}}' }]
+        }
+      ]
+    }
+  })
+  const worker = await mountWorker(main, { host })
+
+  const saved = await worker.request('pipelines.save', {
+    pipeline: {
+      id: 'demo-flow',
+      name: 'Demo flow',
+      agent: 'claude',
+      projectId: 'project-demo',
+      projectName: 'demo',
+      stages: [{ id: 'only', name: 'Only', prompt: 'Do {{task}}' }]
+    }
+  })
+  const kept = saved.pipelines.find((pipeline) => pipeline.id === 'demo-flow')
+  assert.equal(kept?.projectId, 'project-demo')
+  assert.equal(kept?.projectName, 'demo')
+
+  await assert.rejects(
+    worker.request('run.start', {
+      pipelineId: 'demo-flow',
+      workspaceId: 'workspace-2',
+      task: 'wrong repo'
+    }),
+    /belongs to demo/
+  )
+  assert.deepEqual(worker.refusals, [])
+  await worker.deactivate()
+})
+
+test('remembers the agent session and opens it in a new tab', async () => {
+  const sent: Sent[] = []
+  const host = hostFor(sent, plainStorage)
+  host.respond('agent.resume', ({ sessionId }: { sessionId: string }) => ({
+    terminalId: `resumed-${sessionId}`,
+    started: true
+  }))
+  host.respond('terminal.focus', { focused: true })
+  const worker = await mountWorker(main, { host })
+
+  const { run } = await worker.request('run.start', {
+    pipelineId: 'plain',
+    workspaceId: 'workspace-1',
+    task: 'Ship it'
+  })
+  await worker.emit('agent.status.changed', {
+    ...idle('terminal-1', 'working'),
+    sessionId: 'session-42'
+  })
+
+  const state = await worker.request('run.state')
+  assert.equal(state.runs[0]?.sessionId, 'session-42')
+
+  const opened = await worker.request('run.openSession', { runId: run.id })
+  assert.equal(opened.terminalId, 'resumed-session-42')
+  assert.equal(opened.started, true)
+  const resumed = host.callsOf('agent.resume')[0] as
+    | { workspaceId: string; agent: string; sessionId: string }
+    | undefined
+  assert.deepEqual(resumed, {
+    workspaceId: 'workspace-1',
+    agent: 'claude',
+    sessionId: 'session-42'
+  })
+  assert.deepEqual(host.callsOf('terminal.focus'), [{ terminalId: 'resumed-session-42' }])
   assert.deepEqual(worker.refusals, [])
   await worker.deactivate()
 })

@@ -11,10 +11,13 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { JsonValue } from 'orca/worker'
 import type { OrcaWorkerApi } from 'orca/worker'
+import type { HostMethods } from 'orca/host'
 import { detectInstalledAgents } from './agent-detect'
 import { DEFAULT_PIPELINES } from './defaults'
-import { agentBinary, attemptsPerModel, modelChain, modeledCommand } from './models'
-import type { Pipeline, Reasoning, Run, Stage, StageState, Workspace } from './protocol'
+import { agentBinary, attemptsPerModel, canResume, modelChain, modeledCommand } from './models'
+import type { ResumeAgent } from './models'
+import type { Pipeline, Project, Reasoning, Run, Stage, StageState, Workspace } from './protocol'
+import { appliesTo, pipelineProjectKey, projectKey } from './scope'
 
 const PIPELINES_KEY = 'pipelines'
 /** Ids of the seeded pipelines this plugin has already offered, so a deleted seed stays deleted. */
@@ -133,7 +136,10 @@ async function activeWorkspace(orca: OrcaWorkerApi): Promise<Workspace | null> {
     if (!context) return null
     const listed = await orca.host.call('workspace.list')
     const entries = listed?.workspaces ?? []
-    const match = entries.filter((entry) => entry.name === context.displayName)
+    const match = entries.filter(
+      (entry) =>
+        entry.id === context.workspaceId || entry.name === context.displayName
+    )
     return match.length === 1
       ? {
           id: match[0]!.id,
@@ -141,7 +147,8 @@ async function activeWorkspace(orca: OrcaWorkerApi): Promise<Workspace | null> {
           path: match[0]!.path,
           branch: match[0]!.branch,
           kind: match[0]!.kind,
-          project: match[0]!.project ?? null
+          project: match[0]!.project ?? null,
+          projectId: match[0]!.projectId ?? null
         }
       : null
   } catch {
@@ -451,6 +458,7 @@ async function deliverStage(orca: OrcaWorkerApi, run: Run, index: number): Promi
 
     // Same model on a retry keeps its terminal; a new model gets a new process.
     if (run.terminalId === null || previousModel !== model) {
+      run.sessionId = null
       const launched = await launchModeled(orca, run, index, agent, model, prompt)
       run.terminalId = launched.terminalId
       await persist(orca)
@@ -575,6 +583,7 @@ async function failOrFallback(
   run.attempt += 1
   // The process that failed is not worth typing into again; the next try gets a fresh one.
   run.terminalId = null
+  run.sessionId = null
   const perModel = attemptsPerModel(declared)
   if (run.attempt < perModel) {
     await persist(orca)
@@ -656,12 +665,20 @@ async function onAgentStatus(
   event: {
     terminalId?: string
     state: 'working' | 'blocked' | 'waiting' | 'done'
+    sessionId?: string
     mainAgent?: { state: string; outcome?: string }
   }
 ): Promise<void> {
   if (!event.terminalId) return
   const run = runs.find((entry) => entry.terminalId === event.terminalId)
-  if (!run || run.status !== 'running') return
+  if (!run) return
+  // The session id is what opens this conversation in a tab of its own; keep the first one it
+  // reports, even when the event is for a turn that already ended.
+  if (event.sessionId && event.sessionId !== run.sessionId) {
+    run.sessionId = event.sessionId
+    await persist(orca)
+  }
+  if (run.status !== 'running') return
   const stage = currentStage(run)
   if (!stage || stage.status !== 'running') return
   const index = run.stageIndex
@@ -761,6 +778,37 @@ async function adoptReasoning(orca: OrcaWorkerApi, list: Pipeline[]): Promise<Pi
   return next
 }
 
+/** Projects Orca knows, from `project.list` when the host has it, else from the workspaces. */
+async function listedProjects(orca: OrcaWorkerApi): Promise<Project[]> {
+  try {
+    if (orca.host.has('project.list')) {
+      const listed = await orca.host.call('project.list')
+      const projects = (listed?.projects ?? []).map((entry) => ({
+        id: entry.id,
+        name: entry.name,
+        path: entry.path,
+        hostId: entry.hostId ?? null
+      }))
+      if (projects.length > 0) return projects
+    }
+  } catch {
+    // A host without the method, or without permission, falls back to the workspace list.
+  }
+  try {
+    const listed = await orca.host.call('workspace.list')
+    const seen = new Map<string, Project>()
+    for (const entry of listed?.workspaces ?? []) {
+      const id = entry.projectId ?? (entry.project ? `name:${entry.project}` : null)
+      const name = entry.project ?? entry.name
+      if (!id || seen.has(id)) continue
+      seen.set(id, { id, name, path: entry.path, hostId: entry.hostId ?? null })
+    }
+    return [...seen.values()]
+  } catch {
+    return []
+  }
+}
+
 async function storedRuns(orca: OrcaWorkerApi): Promise<Run[]> {
   const stored = await orca.storage.get(RUNS_KEY)
   let list: Run[] = Array.isArray(stored) ? (plain(stored) as Run[]) : []
@@ -778,6 +826,7 @@ async function storedRuns(orca: OrcaWorkerApi): Promise<Run[]> {
     run.modelIndex ??= 0
     run.attempt ??= 0
     run.triedModels ??= []
+    run.sessionId ??= null
   }
   for (const run of list) {
     if (run.status !== 'running') continue
@@ -849,6 +898,79 @@ function missing(): Error {
   return Object.assign(new Error('That run is no longer here.'), { code: 'invalid_params' })
 }
 
+/**
+ * The session behind a run's terminal. `agent.status.changed` carries it on newer Orca builds;
+ * older ones (or a run whose events all predate this plugin version) can be asked for it.
+ */
+async function sessionFor(orca: OrcaWorkerApi, run: Run): Promise<string | null> {
+  if (run.sessionId) return run.sessionId
+  try {
+    const listed = await orca.host.call('agents.list')
+    const match = (listed?.agents ?? []).find(
+      (entry) => entry.terminalId === run.terminalId && entry.sessionId
+    )
+    if (match?.sessionId) {
+      run.sessionId = match.sessionId
+      await persist(orca)
+      return match.sessionId
+    }
+  } catch {
+    // No focused workspace, or no agent there: the run's terminal is all we have.
+  }
+  return null
+}
+
+/** Focuses a terminal where this Orca offers it; false when it cannot (older host, closed terminal). */
+async function focusTerminal(orca: OrcaWorkerApi, terminalId: string): Promise<boolean> {
+  if (!orca.host.has('terminal.focus')) return false
+  try {
+    const answer = await orca.host.call('terminal.focus', { terminalId })
+    return answer.focused
+  } catch {
+    return false
+  }
+}
+
+/** Opens a run's conversation in a new tab, in the workspace it belongs to. */
+async function resumeSession(
+  orca: OrcaWorkerApi,
+  run: Run
+): Promise<{ terminalId: string; started: boolean }> {
+  if (!orca.host.has('agent.resume')) {
+    throw Object.assign(new Error('This Orca cannot resume an agent session.'), {
+      code: 'unavailable'
+    })
+  }
+  const agent = run.agent.trim()
+  if (!canResume(agent)) {
+    throw Object.assign(
+      new Error(`Orca cannot resume ${agent || 'this agent'} by session; open its terminal instead.`),
+      { code: 'invalid_params' }
+    )
+  }
+  const sessionId = await sessionFor(orca, run)
+  if (!sessionId) {
+    throw Object.assign(
+      new Error('That run has no session to reopen yet. Open its terminal instead.'),
+      { code: 'conflict' }
+    )
+  }
+  const answer = await orca.host.call('agent.resume', {
+    workspaceId: run.workspaceId,
+    agent: agent as ResumeAgent,
+    sessionId
+  })
+  // `agent.resume` starts the session in the background; bring it to the front so it is the tab
+  // the person asked for. A host without `workspace:write` still keeps the tab open there.
+  if (answer.started) {
+    await focusTerminal(orca, answer.terminalId)
+  } else if (run.terminalId) {
+    // The conversation is already running in the run's own terminal: show that one.
+    await focusTerminal(orca, run.terminalId)
+  }
+  return answer
+}
+
 export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   availableAgents = detectInstalledAgents()
   await readSettings(orca)
@@ -868,7 +990,14 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
     if (!pipeline.name.trim()) throw new Error('A pipeline needs a name.')
     if (!pipeline.agent.trim()) throw new Error('A pipeline needs an agent.')
     if (pipeline.stages.length === 0) throw new Error('A pipeline needs at least one stage.')
-    const saved: Pipeline = { ...plain(pipeline), agent: pipeline.agent.trim() }
+    const projectId = pipelineProjectKey(pipeline)
+    const projectName = pipeline.projectName?.trim() || null
+    const saved: Pipeline = {
+      ...plain(pipeline),
+      agent: pipeline.agent.trim(),
+      projectId,
+      projectName: projectId ? projectName : null
+    }
     const at = pipelines.findIndex((entry) => entry.id === saved.id)
     pipelines =
       at === -1 ? [...pipelines, saved] : pipelines.map((e) => (e.id === saved.id ? saved : e))
@@ -899,17 +1028,19 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
       path: entry.path,
       branch: entry.branch,
       kind: entry.kind,
-      project: entry.project ?? null
+      project: entry.project ?? null,
+      projectId: entry.projectId ?? null
     }))
     return { workspaces }
   })
 
-  orca.panels.handle('run.state', () => {
+  orca.panels.handle('run.state', async () => {
     // Re-read the machine each time the panel asks, so an agent installed since activation shows up.
     availableAgents = detectInstalledAgents()
     return {
       runs: plain(runs),
       pipelines: plain(pipelines),
+      projects: await listedProjects(orca),
       defaultAgent,
       availableAgents,
       maxParallelRuns,
@@ -933,12 +1064,29 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
     }
 
     let workspaceName = workspaceId
+    let workspaceProject: string | null = null
+    let workspaceProjectName: string | null = null
     try {
       const listed = await orca.host.call('workspace.list')
       const match = (listed?.workspaces ?? []).find((entry) => entry.id === workspaceId)
-      if (match) workspaceName = match.name
+      if (match) {
+        workspaceName = match.name
+        workspaceProjectName = match.project ?? null
+        workspaceProject = projectKey({
+          project: match.project ?? null,
+          projectId: match.projectId ?? null
+        })
+      }
     } catch {
       // The name is cosmetic; the id is what the host needs.
+    }
+
+    // A repo's pipeline runs in that repo's workspaces only; say so instead of running it next door.
+    if (!appliesTo(pipeline, workspaceProject, workspaceProjectName)) {
+      const scope = pipeline.projectName?.trim() || 'its own repo'
+      throw new Error(
+        `"${pipeline.name}" belongs to ${scope}. Pick a workspace in that repo, or edit the pipeline to apply to every workspace.`
+      )
     }
 
     // Orca lets a plugin type only into the active worktree, so a run elsewhere would stall at
@@ -959,6 +1107,7 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
       agent: pipeline.agent,
       task,
       terminalId: null,
+      sessionId: null,
       model: null,
       modelIndex: 0,
       attempt: 0,
@@ -1030,6 +1179,7 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
     run.attempt = 0
     run.triedModels = []
     run.terminalId = null
+    run.sessionId = null
     await startStage(orca, run, run.stageIndex)
     return { runs: plain(runs) }
   })
@@ -1072,6 +1222,27 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
       const tail = [...run.stages].reverse().find((stage) => stage.tail)?.tail ?? null
       return { text: tail }
     }
+  })
+
+  orca.panels.handle('run.open', async ({ runId }) => {
+    const run = runById(runId)
+    if (!run) throw missing()
+    if (run.terminalId && (await focusTerminal(orca, run.terminalId))) {
+      return { opened: 'terminal' as const }
+    }
+    try {
+      await resumeSession(orca, run)
+      return { opened: 'session' as const }
+    } catch {
+      return { opened: 'none' as const }
+    }
+  })
+
+  orca.panels.handle('run.openSession', async ({ runId }) => {
+    const run = runById(runId)
+    if (!run) throw missing()
+    const answer = await resumeSession(orca, run)
+    return { terminalId: answer.terminalId, started: answer.started }
   })
 
   orca.panels.handle('run.remove', async ({ runId }) => {

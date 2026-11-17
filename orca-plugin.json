@@ -3,7 +3,7 @@
   "manifestVersion": 2,
   "id": "pipeline",
   "name": "Pipeline",
-  "version": "0.12.2",
+  "version": "0.13.0",
   "description": "Staged workflows for your agents: plan, build, test and review chained in one agent session.",
   "license": "MIT",
   "engines": {
@@ -25,6 +25,12 @@
     "events": [
       {
         "on": "agent.status.changed"
+      },
+      {
+        "on": "workspace.created"
+      },
+      {
+        "on": "workspace.removed"
       }
     ],
     "statusBarItems": [
@@ -118,6 +124,9 @@
   "capabilities": [
     {
       "kind": "workspace:read"
+    },
+    {
+      "kind": "workspace:write"
     },
     {
       "kind": "agent:read"
